@@ -39,8 +39,7 @@ final class BjdataDecoder extends Converter<List<int>, Object?> {
   /// Constructs a new BjdataDecoder.
   ///
   /// The [reviver] may be `null`.
-  const BjdataDecoder([Object? Function(Object? key, Object? value)? reviver])
-      : _reviver = reviver;
+  const BjdataDecoder([Object? Function(Object? key, Object? value)? reviver]) : _reviver = reviver;
 
   /// Converts the given BJData-string [input] to its corresponding object.
   ///
@@ -56,7 +55,7 @@ final class BjdataDecoder extends Converter<List<int>, Object?> {
   ///
   /// Throws [FormatException] if the input is not valid BJData text.
   @override
-  dynamic convert(List<int> input) => Decoder().parse(input);
+  dynamic convert(List<int> input) => Decoder(_reviver).parse(input);
 
   /// Starts a conversion from a chunked BJData string to its corresponding object.
   ///

@@ -33,6 +33,9 @@ import '../marker.dart';
 // }
 
 class Decoder {
+  Decoder([this._reviver]);
+
+  final Object? Function(Object? key, Object? value)? _reviver;
   int _offset = 0;
   late Uint8List _bytes;
 
@@ -46,7 +49,7 @@ class Decoder {
     if (_offset != _bytes.length) {
       throw FormatException('Trailing data at offset $_offset');
     }
-    return value;
+    return _reviver == null ? value : _reviver!(null, value);
   }
 
   Uint8List _readUint8List(int length) {
@@ -55,8 +58,7 @@ class Decoder {
     return view;
   }
 
-  ByteData _readByteData(int length) =>
-      ByteData.sublistView(_readUint8List(length));
+  ByteData _readByteData(int length) => ByteData.sublistView(_readUint8List(length));
 
   Marker _peekMarker() => Marker.fromValue(_bytes[_offset]);
 
@@ -125,9 +127,7 @@ class Decoder {
       return _readByteData(8).getUint64(0, Endian.little);
     } else {
       // Web
-      return _readUint8List(8)
-          .reversed
-          .fold(0, (acc, byte) => (acc *= 256) + byte);
+      return _readUint8List(8).reversed.fold(0, (acc, byte) => (acc *= 256) + byte);
     }
   }
 
@@ -146,8 +146,7 @@ class Decoder {
     }
   }
 
-  double _readFloat16() =>
-      throw UnsupportedError("Half-precision floats not supported"); // TODO
+  double _readFloat16() => throw UnsupportedError("Half-precision floats not supported"); // TODO
   double _readFloat32() => _readByteData(4).getFloat32(0, Endian.little);
   double _readFloat64() => _readByteData(8).getFloat64(0, Endian.little);
 
@@ -201,7 +200,7 @@ class Decoder {
     for (var i = 0; count != null ? i < count : true; i++) {
       if (count == null && _peekMarkerConsumeIf(Marker.arrayClose)) break;
       final value = _readValueForMarker(strongType ?? _readMarker());
-      list.add(value);
+      list.add(_reviver == null ? value : _reviver!(i, value));
     }
     return list;
   }
@@ -214,7 +213,7 @@ class Decoder {
       if (count == null && _peekMarker() == Marker.objectClose) break;
       final key = _readString();
       final value = _readValueForMarker(strongType ?? _readMarker());
-      map[key] = value;
+      map[key] = _reviver == null ? value : _reviver!(key, value);
     }
     return map;
   }
