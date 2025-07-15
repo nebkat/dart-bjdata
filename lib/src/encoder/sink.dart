@@ -220,10 +220,28 @@ abstract class Encoder {
         writeBytes(Uint8List(4)
           ..buffer.asByteData().setUint32(0, integer, Endian.little));
         return;
+      case >= 0:
+        writeMarker(Marker.uint64);
+        if (identical(1.0, 1)) {
+          // Dart2js
+          writeBytes(Uint8List(8)
+            ..buffer.asByteData().setUint32(0, integer & 0xFFFFFFFF, Endian.little)
+            ..buffer.asByteData().setUint32(4, integer ~/ pow(2, 32), Endian.little));
+        } else {
+          // Native
+          writeBytes(Uint8List(8)..buffer.asByteData().setUint64(0, integer, Endian.little));
+        }
       default:
         writeMarker(Marker.int64);
-        writeBytes(Uint8List(8)
-          ..buffer.asByteData().setInt64(0, integer, Endian.little));
+        if (identical(1.0, 1)) {
+          // Dart2js
+          writeBytes(Uint8List(8)
+            ..buffer.asByteData().setUint32(0, integer & 0xFFFFFFFF, Endian.little)
+            ..buffer.asByteData().setInt32(4, integer ~/ pow(2, 32), Endian.little));
+        } else {
+          // Native
+          writeBytes(Uint8List(8)..buffer.asByteData().setInt64(0, integer, Endian.little));
+        }
     }
   }
 
