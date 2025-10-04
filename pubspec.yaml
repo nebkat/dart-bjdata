@@ -8,7 +8,7 @@ documentation: https://github.com/nebkat/dart-bjdata/blob/master/README.md
 environment:
   sdk: ">=3.1.0 <4.0.0"
 dev_dependencies:
-  lints: ^6.0.0
+  lints: ^4.0.0
   test: ^1.25.0
 executables:
   bjdata: bjdata
