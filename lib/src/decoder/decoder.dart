@@ -13,13 +13,12 @@ import 'sink.dart';
 /// ```dart
 /// const BjdataDecoder decoder = BjdataDecoder();
 ///
-/// const String bjdataString = '''
-///   {
-///     "data": [{"text": "foo", "value": 1 },
-///              {"text": "bar", "value": 2 }],
-///     "text": "Dart"
-///   }
-/// ''';
+/// const Uint8List bjdataString = ...;
+/// // 7b2369026904646174615b2369027b23
+/// // 6902690474657874536903666f6f6905
+/// // 76616c756569017b2369026904746578
+/// // 74536903626172690576616c75656902
+/// // 69047465787453690444617274
 ///
 /// final Map<String, dynamic> object = decoder.convert(bjdataString);
 ///
@@ -30,9 +29,7 @@ import 'sink.dart';
 /// print(object['text']); // Dart
 /// ```
 ///
-/// When used as a [StreamTransformer], the input stream may emit
-/// multiple strings. The concatenation of all of these strings must
-/// be a valid BJData encoding of a single BJData value.
+/// Does not currently support chunked decoding.
 final class BjdataDecoder extends Converter<List<int>, Object?> {
   final Object? Function(Object? key, Object? value)? _reviver;
 
@@ -55,7 +52,7 @@ final class BjdataDecoder extends Converter<List<int>, Object?> {
   ///
   /// Throws [FormatException] if the input is not valid BJData text.
   @override
-  dynamic convert(List<int> input) => Decoder(_reviver).parse(input);
+  dynamic convert(List<int> input) => BjdataReader(_reviver).read(input);
 
   /// Starts a conversion from a chunked BJData string to its corresponding object.
   ///

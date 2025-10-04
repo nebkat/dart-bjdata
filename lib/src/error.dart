@@ -1,4 +1,4 @@
-/// Error thrown by BJDATA serialization if an object cannot be serialized.
+/// Error thrown by BJData serialization if an object cannot be serialized.
 ///
 /// The [unsupportedObject] field holds that object that failed to be serialized.
 ///
@@ -16,7 +16,7 @@ class BjdataUnsupportedObjectError extends Error {
   /// The partial result of the conversion, up until the error happened.
   ///
   /// May be null.
-  final String? partialResult;
+  final Object? partialResult;
 
   BjdataUnsupportedObjectError(
     this.unsupportedObject, {
@@ -47,5 +47,5 @@ class BjdataCyclicError extends BjdataUnsupportedObjectError {
   BjdataCyclicError(super.object);
 
   @override
-  String toString() => "Cyclic error in BJDATA stringify";
+  String toString() => "Cyclic error in BJData stringify";
 }

@@ -1,8 +1,14 @@
-enum Marker {
+/// BJData markers
+///
+/// Used to denote types and structure in the BJData binary format.
+///
+/// [null_] through [huge] are considered values.
+/// [arrayOpen] and [objectOpen] are containers.
+/// [strongType], [count], and [noop] are container modifiers.
+enum BjdataMarker {
   /* Z */ null_(0x5A),
   /* T */ true_(0x54),
   /* F */ false_(0x46),
-  /* N */ noop(0x4E),
 
   /* U */ uint8(0x55),
   /* i */ int8(0x69),
@@ -28,23 +34,39 @@ enum Marker {
   /* } */ objectClose(0x7D),
 
   /* $ */ strongType(0x24),
-  /* # */ count(0x23);
+  /* # */ count(0x23),
+  /* N */ noop(0x4E);
 
   final int value;
 
-  const Marker(this.value);
+  const BjdataMarker(this.value);
 
-  factory Marker.fromValue(int v) {
-    for (final value in Marker.values) {
+  int get i => value;
+  String get ascii => String.fromCharCode(value);
+
+  /// The marker corresponding to the binary value [v], or null if [v] is not a valid marker.
+  static BjdataMarker? fromValueOrNull(int v) {
+    for (final value in BjdataMarker.values) {
       if (value.value == v) return value;
     }
-    throw FormatException(
-        'Invalid BJData marker: 0x${v.toRadixString(16).padLeft(2, '0')}');
+    return null;
   }
 
-  bool get isTypeMarker => index < Marker.arrayOpen.index;
-  bool get isValidLengthTypeMarker =>
-      index >= Marker.uint8.index && index <= Marker.int64.index;
-  bool get isValidStrongType =>
-      index >= Marker.uint8.index && index <= Marker.byte.index;
+  /// The marker corresponding to the binary value [v], or throws a [FormatException] if [v] is not a valid marker.
+  factory BjdataMarker.fromValue(int v) {
+    final marker = fromValueOrNull(v);
+    if (marker != null) return marker;
+    throw FormatException(
+      'Invalid BJData marker: 0x${v.toRadixString(16).padLeft(2, '0')}',
+    );
+  }
+
+  /// Whether this marker represents a value (not a container or modifier).
+  bool get isValueMarker => index < BjdataMarker.arrayOpen.index;
+
+  /// Whether this marker is a valid length type (for strings, container count, etc).
+  bool get isValidLengthMarker => index >= BjdataMarker.uint8.index && index <= BjdataMarker.int64.index;
+
+  /// Whether this marker is a valid strong type (for typed containers).
+  bool get isValidStrongType => index >= BjdataMarker.uint8.index && index <= BjdataMarker.byte.index;
 }

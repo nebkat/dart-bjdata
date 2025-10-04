@@ -8,3 +8,7 @@ pubspec.lock
 
 # Android Studio
 .idea/
+
+# Flutter Version Manager
+.fvm/
+.fvmrc
