@@ -66,74 +66,76 @@ echo -n "[1, 2, 3]" | bjdata print
 ### Decoding BJData to Dart
 - Multi dimensional arrays are not yet supported.
 
-| BJData Type      | Marker | Dart          |
-|------------------|--------|---------------|
-| `null`           | `Z`    | `null`        |
-| `true`           | `T`    | `true`        |
-| `false`          | `F`    | `false`       |
-| `int8`           | `i`    | `int`         |
-| `uint8`          | `U`    | `int`         |
-| `int16`          | `u`    | `int`         |
-| `uint16`         | `I`    | `int`         |
-| `int32`          | `l`    | `int`         |
-| `uint32`         | `m`    | `int`         |
-| `int64`          | `L`    | `int`         |
-| `uint64`         | `M`    | `int` *       |
-| `float16`        | `h`    | `double`      |
-| `float32`        | `d`    | `double`      |
-| `float64`        | `D`    | `double`      |
-| `byte`           | `B`    | `int`         |
-| `char`           | `C`    | `String`      |
-| `string`         | `S`    | `String`      |
-| `huge`           | `H`    | `BigInt`      |
-| `array`          | `[]`   | `List`        |
-| `array[byte]`    | `[$B`  | `ByteData`    |
-| `array[int8]`    | `[$i`  | `Int8List`    |
-| `array[uint8]`   | `[$U`  | `Uint8List`   |
-| `array[int16]`   | `[$u`  | `Int16List`   |
-| `array[uint16]`  | `[$I`  | `Uint16List`  |
-| `array[int32]`   | `[$l`  | `Int32List`   |
-| `array[uint32]`  | `[$m`  | `Uint32List`  |
-| `array[int64]`   | `[$L`  | `Int64List`   |
-| `array[uint64]`  | `[$M`  | `Uint64List`  |
-| `array[float16]` | `[$h`  | `Float32List` |
-| `array[float32]` | `[$d`  | `Float32List` |
-| `array[float64]` | `[$D`  | `Float64List` |
-| `object`         | `{}`   | `Map`         |
+| BJData Type      | Marker | Dart                           |
+|------------------|--------|--------------------------------|
+| `null`           | `Z`    | `null`                         |
+| `true`           | `T`    | `true`                         |
+| `false`          | `F`    | `false`                        |
+| `int8`           | `i`    | `int`                          |
+| `uint8`          | `U`    | `int`                          |
+| `int16`          | `u`    | `int`                          |
+| `uint16`         | `I`    | `int`                          |
+| `int32`          | `l`    | `int`                          |
+| `uint32`         | `m`    | `int`                          |
+| `int64`          | `L`    | `int`                          |
+| `uint64`         | `M`    | `int` [*](#decode-int-warning) |
+| `float16`        | `h`    | `double`                       |
+| `float32`        | `d`    | `double`                       |
+| `float64`        | `D`    | `double`                       |
+| `byte`           | `B`    | `int`                          |
+| `char`           | `C`    | `String`                       |
+| `string`         | `S`    | `String`                       |
+| `huge`           | `H`    | `BigInt`                       |
+| `array`          | `[]`   | `List`                         |
+| `array[byte]`    | `[$B`  | `ByteData`                     |
+| `array[int8]`    | `[$i`  | `Int8List`                     |
+| `array[uint8]`   | `[$U`  | `Uint8List`                    |
+| `array[int16]`   | `[$u`  | `Int16List`                    |
+| `array[uint16]`  | `[$I`  | `Uint16List`                   |
+| `array[int32]`   | `[$l`  | `Int32List`                    |
+| `array[uint32]`  | `[$m`  | `Uint32List`                   |
+| `array[int64]`   | `[$L`  | `Int64List`                    |
+| `array[uint64]`  | `[$M`  | `Uint64List`                   |
+| `array[float16]` | `[$h`  | `Float32List`                  |
+| `array[float32]` | `[$d`  | `Float32List`                  |
+| `array[float64]` | `[$D`  | `Float64List`                  |
+| `object`         | `{}`   | `Map`                          |
 
-\* Warning: `int` in Dart is a signed 64-bit integer. `uint64`/`M` values are decoded as `int64`
+<a name="decode-int-warning">\*</a>
+    Warning: `int` in Dart is a signed 64-bit integer. `uint64`/`M` values are decoded as `int64`
     (i.e. values greater than `9223372036854775807` are decoded as negative values).
 
 ### Encoding Dart to BJData
-| Dart          | Marker    | BJData Type      |
-|---------------|-----------|------------------|
-| `null`        | `Z`       | `null`           |
-| `bool`        | `TF`      | `bool`           |
-| `int`         | `UiIumlL` | `int` *          |
-| `double`      | `D`       | `float64`        |
-| `String`      | `S`       | `string`         |
-| `BigInt`      | `H`       | `huge`           |
-| `List`        | `[]`      | `array`          |
-| `ByteData`    | `[$B`     | `array[byte]` ** |
-| `Int8List`    | `[$i`     | `array[int8]`    |
-| `Uint8List`   | `[$U`     | `array[uint8]`   |
-| `Int16List`   | `[$u`     | `array[int16]`   |
-| `Uint16List`  | `[$I`     | `array[uint16]`  |
-| `Int32List`   | `[$l`     | `array[int32]`   |
-| `Uint32List`  | `[$m`     | `array[uint32]`  |
-| `Int64List`   | `[$L`     | `array[int64]`   |
-| `Uint64List`  | `[$M`     | `array[uint64]`  |
-| `Float32List` | `[$d`     | `array[float32]` |
-| `Float64List` | `[$D`     | `array[float64]` |
-| `Map`         | `{}`      | `object`         |
+| Dart          | Marker    | BJData Type                                    |
+|---------------|-----------|------------------------------------------------|
+| `null`        | `Z`       | `null`                                         |
+| `bool`        | `TF`      | `bool`                                         |
+| `int`         | `UiIumlL` | `int` [*](#encode-int-notice)                  |
+| `double`      | `D`       | `float64`                                      |
+| `String`      | `S`       | `string`                                       |
+| `BigInt`      | `H`       | `huge`                                         |
+| `List`        | `[]`      | `array`                                        |
+| `ByteData`    | `[$B`     | `array[byte]` [**](#encode-binary-data-notice) |
+| `Int8List`    | `[$i`     | `array[int8]`                                  |
+| `Uint8List`   | `[$U`     | `array[uint8]`                                 |
+| `Int16List`   | `[$u`     | `array[int16]`                                 |
+| `Uint16List`  | `[$I`     | `array[uint16]`                                |
+| `Int32List`   | `[$l`     | `array[int32]`                                 |
+| `Uint32List`  | `[$m`     | `array[uint32]`                                |
+| `Int64List`   | `[$L`     | `array[int64]`                                 |
+| `Uint64List`  | `[$M`     | `array[uint64]`                                |
+| `Float32List` | `[$d`     | `array[float32]`                               |
+| `Float64List` | `[$D`     | `array[float64]`                               |
+| `Map`         | `{}`      | `object`                                       |
 
-\* `int` values are encoded using the smallest integer type possible, favouring unsigned types.
+<a name="encode-int-notice">\*</a>
+    `int` values are encoded using the smallest integer type possible, favouring unsigned types.
 
-\** `ByteData` is recommended for encoding "binary data" as per the BJData specification
+<a name="encode-binary-data-notice">\**</a> `ByteData` is recommended for encoding "binary data" as per the BJData specification
     (as this may affect how the data is parsed in other libraries). Converting from `Uint8List`
     to `ByteData` can be done using `ByteData.sublistView(list)`.
 
-### Web
+## Web
 The package can be used in web applications, however it is affected by the [JavaScript number
 peculiarities](https://dart.dev/resources/language/number-representation#differences-in-behavior).
 
