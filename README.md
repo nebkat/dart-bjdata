@@ -1,7 +1,7 @@
 bjdata
 ======
 
-[BJData](https://bjdata.org) (draft 3 specification) implementation in Dart.
+[BJData](https://github.com/neurojson/bjdata) (draft 3 specification) implementation in Dart.
 
 ![Dart version](https://img.shields.io/badge/Dart-3.1%2B-blue) [![License](https://img.shields.io/github/license/nebkat/dart-bjdata?cacheSeconds=3600&color=informational&label=License)](./LICENSE.md)
 
