@@ -1,6 +1,6 @@
 name: bjdata
-description: A BJData library for Dart.
-version: 0.9.1
+description: A library for encoding and decoding BJData, a binary JSON-compatible data format.
+version: 0.9.2
 homepage: https://github.com/nebkat/dart-bjdata
 repository: https://github.com/nebkat/dart-bjdata
 issue_tracker: https://github.com/nebkat/dart-bjdata/issues
