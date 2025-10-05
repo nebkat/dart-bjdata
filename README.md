@@ -5,7 +5,7 @@ bjdata
 
 ![Dart version](https://img.shields.io/badge/Dart-3.1%2B-blue) [![License](https://img.shields.io/github/license/nebkat/dart-bjdata?cacheSeconds=3600&color=informational&label=License)](./LICENSE.md)
 
-[![Pub package](https://img.shields.io/pub/v/bjdata.svg)](https://pub.dev/packages/bjdata) [![Build status](https://github.com/nebkat/dart-bjdata/actions/workflows/bjdata.yml/badge.svg)](https://github.com/nebkat/dart-physical/actions/workflows/physical.yml) [![Coverage status](https://coveralls.io/repos/github/nebkat/dart-bjdata/badge.svg)](https://coveralls.io/github/nebkat/dart-physical)
+[![Pub package](https://img.shields.io/pub/v/bjdata.svg)](https://pub.dev/packages/bjdata) [![Build status](https://github.com/nebkat/dart-bjdata/actions/workflows/bjdata.yml/badge.svg)](https://github.com/nebkat/dart-bjdata/actions/workflows/bjdata.yml) [![Coverage status](https://coveralls.io/repos/github/nebkat/dart-bjdata/badge.svg)](https://coveralls.io/github/nebkat/dart-bjdata)
 
 Encoding/decoding of BJData to/from Dart objects in an API based on the `dart:convert` package.
 
