@@ -9,7 +9,7 @@ Future<void> main(List<String> arguments) async {
   final outputPath = arguments.length > 2 ? arguments[2] : null;
 
   final _ = switch (command) {
-    'print' => await block(inputPath, outputPath),
+    'block' => await block(inputPath, outputPath),
     'encode' => await encode(inputPath, outputPath),
     'decode' => await decode(inputPath, outputPath),
     _ => usage(arguments.contains('-h') || arguments.contains('--help')),
