@@ -364,7 +364,8 @@ class BjdataBufferWriter extends _BjdataWriter {
   void writeMarker(BjdataMarker tm) => writeByte(tm.value);
 
   @override
-  void writeStringContents(String string) => writeBytes(utf8.encode(string));
+  // ignore: unnecessary_cast (https://github.com/dart-lang/sdk/issues/52801)
+  void writeStringContents(String string) => writeBytes(utf8.encode(string) as Uint8List);
 
   @override
   void writeIntWithoutMarker(BjdataMarker marker, int integer) {
