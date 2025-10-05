@@ -1,6 +1,6 @@
 name: bjdata
 description: A BJData library for Dart.
-version: 0.9.0
+version: 0.9.1
 homepage: https://github.com/nebkat/dart-bjdata
 repository: https://github.com/nebkat/dart-bjdata
 issue_tracker: https://github.com/nebkat/dart-bjdata/issues
