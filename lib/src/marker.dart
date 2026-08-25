@@ -72,4 +72,20 @@ enum BjdataMarker {
 
   /// Whether this marker is an integer type.
   bool get isIntegerType => index >= BjdataMarker.uint8.index && index <= BjdataMarker.int64.index;
+
+  /// Whether this marker is a floating point type.
+  bool get isFloatType => index >= BjdataMarker.float16.index && index <= BjdataMarker.float64.index;
+
+  /// The number of bytes occupied by a value of this type, or null if the type
+  /// is not fixed-length.
+  ///
+  /// Zero-length markers ([null_], [true_], [false_], [noop]) have a length of 0.
+  int? get fixedByteLength => switch (this) {
+        BjdataMarker.null_ || BjdataMarker.true_ || BjdataMarker.false_ || BjdataMarker.noop => 0,
+        BjdataMarker.uint8 || BjdataMarker.int8 || BjdataMarker.char || BjdataMarker.byte => 1,
+        BjdataMarker.uint16 || BjdataMarker.int16 || BjdataMarker.float16 => 2,
+        BjdataMarker.uint32 || BjdataMarker.int32 || BjdataMarker.float32 => 4,
+        BjdataMarker.uint64 || BjdataMarker.int64 || BjdataMarker.float64 => 8,
+        _ => null,
+      };
 }
