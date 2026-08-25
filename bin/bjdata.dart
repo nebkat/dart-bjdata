@@ -4,23 +4,46 @@ import 'dart:io';
 import 'package:bjdata/bjdata.dart';
 
 Future<void> main(List<String> arguments) async {
-  final soa = switch (arguments) {
-    _ when arguments.contains('--no-soa') => BjdataSoaLayout.off,
-    _ when arguments.contains('--column-major') => BjdataSoaLayout.columnMajor,
-    _ => BjdataSoaLayout.rowMajor,
-  };
+  final config = BjdataConfig(
+    version: _draft(arguments),
+    soa: switch (arguments) {
+      _ when arguments.contains('--no-soa') => BjdataSoaLayout.off,
+      _ when arguments.contains('--column-major') => BjdataSoaLayout.columnMajor,
+      _ => BjdataSoaLayout.rowMajor,
+    },
+    multiDimensional: !arguments.contains('--no-nd'),
+  );
   final positional = arguments.where((a) => !a.startsWith('-')).toList();
   final command = positional.isNotEmpty ? positional[0] : null;
   final inputPath = positional.length > 1 ? positional[1] : null;
   final outputPath = positional.length > 2 ? positional[2] : null;
 
   final _ = switch (command) {
-    'block' => await block(inputPath, outputPath, soa),
-    'encode' => await encode(inputPath, outputPath, soa),
+    'block' => await block(inputPath, outputPath, config),
+    'encode' => await encode(inputPath, outputPath, config),
     'decode' => await decode(inputPath, outputPath),
     _ => usage(arguments.contains('-h') || arguments.contains('--help')),
   };
 }
+
+/// The revision named by `--draft=N`, or the newest one if it was not given.
+BjdataVersion _draft(List<String> arguments) {
+  const prefix = '--draft=';
+  final argument = arguments.lastWhere((a) => a.startsWith(prefix), orElse: () => '');
+  if (argument.isEmpty) return BjdataVersion.values.last;
+
+  final draft = argument.substring(prefix.length);
+  return BjdataVersion.values.firstWhere(
+    (version) => version.name == 'draft$draft',
+    orElse: () {
+      stderr.writeln("Unknown draft '$draft', expected one of ${_draftNumbers.join(', ')}");
+      exit(1);
+    },
+  );
+}
+
+/// The draft numbers of every [BjdataVersion], as `--draft=N` takes them.
+Iterable<String> get _draftNumbers => BjdataVersion.values.map((version) => version.name.replaceFirst('draft', ''));
 
 Future<List<int>> _readInput(String? inputPath) async {
   if (inputPath != null) {
@@ -47,13 +70,12 @@ void usage(bool requested) {
   final out = requested ? stdout : stderr;
   out.writeln("A command-line utility for BJData encoding and decoding.");
   out.writeln();
-  out.writeln('Usage: bjdata <block|encode|decode> [input] [output] [--no-soa|--column-major]');
+  out.writeln('Usage: bjdata <block|encode|decode> [input] [output] [options]');
   out.writeln(
     '- Input and output are optional file paths\n'
     '- If omitted, stdin/stdout are used\n'
     '- Uniform tables of records are packed as row-major Structure-of-Arrays\n'
-    '  containers; --column-major packs them by field instead, and --no-soa\n'
-    '  writes plain arrays of objects',
+    '  containers by default',
   );
   out.writeln();
   out.writeln('Commands:');
@@ -61,20 +83,27 @@ void usage(bool requested) {
   out.writeln('  encode  Convert JSON to BJData binary');
   out.writeln('  decode  Convert BJData binary to JSON');
   out.writeln();
+  out.writeln('Options:');
+  out.writeln('  --draft=N        Write draft N output (${_draftNumbers.join('/')}), the newest by default;\n'
+      '                   draft 3 has no packed tables');
+  out.writeln('  --no-soa         Write tables as plain arrays of objects');
+  out.writeln('  --column-major   Pack tables by field rather than by record');
+  out.writeln('  --no-nd          Do not pack nested tables into one N-dimensional container');
+  out.writeln();
   if (!requested) exit(1);
 }
 
-Future<void> block(String? inputPath, String? outputPath, BjdataSoaLayout soa) async {
+Future<void> block(String? inputPath, String? outputPath, BjdataConfig config) async {
   final input = await _readInput(inputPath);
   final data = json.decode(utf8.decode(input));
-  final block = bjdataBlockNotation(data, indent: '    ', soa: soa);
+  final block = bjdataBlockNotation(data, indent: '    ', config: config);
   await _writeOutput(outputPath, utf8.encode(block));
 }
 
-Future<void> encode(String? inputPath, String? outputPath, BjdataSoaLayout soa) async {
+Future<void> encode(String? inputPath, String? outputPath, BjdataConfig config) async {
   final input = await _readInput(inputPath);
   final data = jsonDecode(utf8.decode(input));
-  final bjdata = bjdataEncode(data, soa: soa);
+  final bjdata = bjdataEncode(data, config: config);
   await _writeOutput(outputPath, bjdata);
 }
 

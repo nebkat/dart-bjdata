@@ -542,11 +542,15 @@ const int _maxSoaDepth = 64;
 /// Describes [list] as a Structure-of-Arrays container, or returns null if it is
 /// not a uniform table of records.
 ///
-/// Accepts a flat list of records, and rectangular nested lists of records for
-/// N-dimensional containers, where the nesting becomes the container dimensions
-/// and the records are flattened in row-major order.
-BjdataSoaCandidate? tryBjdataSoaCandidate(List<Object?> list) {
-  final shape = _tryShape(list, 0);
+/// Accepts a flat list of records, and, when [multiDimensional] is true,
+/// rectangular nested lists of records for N-dimensional containers, where the
+/// nesting becomes the container dimensions and the records are flattened in
+/// row-major order.
+///
+/// With [multiDimensional] false a nested list is not a candidate, so it is
+/// written as a nested array whose own elements may each still be packed.
+BjdataSoaCandidate? tryBjdataSoaCandidate(List<Object?> list, {bool multiDimensional = true}) {
+  final shape = _tryShape(list, 0, multiDimensional);
   if (shape == null) return null;
   if (shape.records.length < _minimumSoaRecords) return null;
 
@@ -557,7 +561,11 @@ BjdataSoaCandidate? tryBjdataSoaCandidate(List<Object?> list) {
 
 /// The dimensions and flattened records of [list], or null if the nesting is
 /// ragged or the leaves are not all string-keyed maps.
-({List<int> dimensions, List<Map<String, Object?>> records})? _tryShape(List<Object?> list, int depth) {
+({List<int> dimensions, List<Map<String, Object?>> records})? _tryShape(
+  List<Object?> list,
+  int depth,
+  bool multiDimensional,
+) {
   if (list.isEmpty || list is TypedData || depth > _maxSoaDepth) return null;
   final first = list.first;
 
@@ -578,12 +586,12 @@ BjdataSoaCandidate? tryBjdataSoaCandidate(List<Object?> list) {
     return (dimensions: [list.length], records: records);
   }
 
-  if (first is List && first is! TypedData) {
+  if (multiDimensional && first is List && first is! TypedData) {
     List<int>? innerDimensions;
     final records = <Map<String, Object?>>[];
     for (final element in list) {
       if (element is! List) return null;
-      final shape = _tryShape(element, depth + 1);
+      final shape = _tryShape(element, depth + 1, multiDimensional);
       if (shape == null) return null;
       if (innerDimensions == null) {
         innerDimensions = shape.dimensions;

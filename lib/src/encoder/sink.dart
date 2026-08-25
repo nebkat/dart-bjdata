@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import '../error.dart';
 import '../marker.dart';
+import '../config.dart';
 import '../soa.dart';
 
 /// Implements the chunked conversion from object to its BJData representation.
@@ -14,11 +15,11 @@ class BjdataEncoderSink implements ChunkedConversionSink<Object?> {
   final ByteConversionSink _sink;
   final Object? Function(dynamic)? _toEncodable;
   final int _bufferSize;
-  final BjdataSoaLayout _soa;
+  final BjdataConfig _config;
   bool _isDone = false;
 
-  BjdataEncoderSink(this._sink, this._toEncodable, this._bufferSize, {BjdataSoaLayout soa = BjdataSoaLayout.rowMajor})
-      : _soa = soa;
+  BjdataEncoderSink(this._sink, this._toEncodable, this._bufferSize, {BjdataConfig config = const BjdataConfig()})
+      : _config = config;
 
   /// Encodes the given object [o].
   ///
@@ -33,7 +34,7 @@ class BjdataEncoderSink implements ChunkedConversionSink<Object?> {
     _isDone = true;
     BjdataBufferWriter.encode(
         object, _toEncodable, _bufferSize, (chunk) => _sink.addSlice(chunk, 0, chunk.length, false),
-        soa: _soa);
+        config: _config);
     _sink.close();
   }
 
@@ -53,12 +54,12 @@ class BjdataBlockNotationEncoderSink implements ChunkedConversionSink<Object?> {
   final String? _indent;
   final Object? Function(dynamic)? _toEncodable;
   final StringConversionSink _sink;
-  final BjdataSoaLayout _soa;
+  final BjdataConfig _config;
   bool _isDone = false;
 
   BjdataBlockNotationEncoderSink(this._sink, this._toEncodable, this._indent,
-      {BjdataSoaLayout soa = BjdataSoaLayout.rowMajor})
-      : _soa = soa;
+      {BjdataConfig config = const BjdataConfig()})
+      : _config = config;
 
   /// Encodes the given object [o].
   ///
@@ -72,7 +73,7 @@ class BjdataBlockNotationEncoderSink implements ChunkedConversionSink<Object?> {
     }
     _isDone = true;
     final stringSink = _sink.asStringSink();
-    BjdataBlockNotationStringifier.printOn(o, stringSink, _toEncodable, _indent, soa: _soa);
+    BjdataBlockNotationStringifier.printOn(o, stringSink, _toEncodable, _indent, config: _config);
     stringSink.close();
   }
 
@@ -98,10 +99,10 @@ abstract class _BjdataWriter<T> {
   /// Function called for each un-encodable object encountered.
   final Function(dynamic) _toEncodable;
 
-  /// How uniform tables of records are packed.
-  final BjdataSoaLayout _soa;
+  /// How the output is written.
+  final BjdataConfig _config;
 
-  _BjdataWriter(dynamic Function(dynamic o)? toEncodable, this._soa)
+  _BjdataWriter(dynamic Function(dynamic o)? toEncodable, this._config)
       : _toEncodable = toEncodable ?? _defaultToEncodable;
 
   T? get _partialResult;
@@ -178,9 +179,11 @@ abstract class _BjdataWriter<T> {
         writeTypedData(td);
       case List l:
         _checkCycle(l);
-        final soa = _soa == BjdataSoaLayout.off ? null : tryBjdataSoaCandidate(l);
+        final layout = _config.effectiveSoa;
+        final soa =
+            layout == BjdataSoaLayout.off ? null : tryBjdataSoaCandidate(l, multiDimensional: _config.multiDimensional);
         if (soa != null) {
-          writeSoa(soa, _soa);
+          writeSoa(soa, layout);
         } else {
           writeList(l);
         }
@@ -575,9 +578,9 @@ class BjdataBufferWriter extends _BjdataWriter {
     dynamic Function(dynamic o)? toEncodable,
     this.bufferSize,
     this.addChunk, {
-    BjdataSoaLayout soa = BjdataSoaLayout.rowMajor,
+    BjdataConfig config = const BjdataConfig(),
   })  : buffer = Uint8List(bufferSize),
-        super(toEncodable, soa);
+        super(toEncodable, config);
 
   /// Convert [object] to UTF-8 encoded BJData.
   ///
@@ -590,9 +593,9 @@ class BjdataBufferWriter extends _BjdataWriter {
     dynamic Function(dynamic o)? toEncodable,
     int bufferSize,
     void Function(Uint8List chunk) addChunk, {
-    BjdataSoaLayout soa = BjdataSoaLayout.rowMajor,
+    BjdataConfig config = const BjdataConfig(),
   }) {
-    final encoder = BjdataBufferWriter(toEncodable, bufferSize, addChunk, soa: soa);
+    final encoder = BjdataBufferWriter(toEncodable, bufferSize, addChunk, config: config);
     encoder.write(object);
     encoder.flush(refill: false);
   }
@@ -703,8 +706,8 @@ class BjdataBlockNotationStringifier extends _BjdataWriter {
     this._sink,
     dynamic Function(dynamic o)? toEncodable,
     this._indent, {
-    BjdataSoaLayout soa = BjdataSoaLayout.rowMajor,
-  }) : super(toEncodable, soa);
+    BjdataConfig config = const BjdataConfig(),
+  }) : super(toEncodable, config);
 
   /// Convert object to a string.
   ///
@@ -719,10 +722,10 @@ class BjdataBlockNotationStringifier extends _BjdataWriter {
     Object? object,
     dynamic Function(dynamic object)? toEncodable,
     String? indent, {
-    BjdataSoaLayout soa = BjdataSoaLayout.rowMajor,
+    BjdataConfig config = const BjdataConfig(),
   }) {
     var output = StringBuffer();
-    printOn(object, output, toEncodable, indent, soa: soa);
+    printOn(object, output, toEncodable, indent, config: config);
     return output.toString();
   }
 
@@ -734,9 +737,9 @@ class BjdataBlockNotationStringifier extends _BjdataWriter {
     StringSink output,
     dynamic Function(dynamic o)? toEncodable,
     String? indent, {
-    BjdataSoaLayout soa = BjdataSoaLayout.rowMajor,
+    BjdataConfig config = const BjdataConfig(),
   }) {
-    BjdataBlockNotationStringifier(output, toEncodable, indent, soa: soa).write(object);
+    BjdataBlockNotationStringifier(output, toEncodable, indent, config: config).write(object);
     if (indent != null) output.write('\n');
   }
 

@@ -612,18 +612,20 @@ void main() {
       test('packs a uniform table by default', () {
         final encoded = bjdataEncode(table);
         expect(encoded.sublist(0, 3), [M.arrayOpen.i, M.strongType.i, M.objectOpen.i]);
-        expect(encoded.length, lessThan(bjdataEncode(table, soa: BjdataSoaLayout.off).length));
+        expect(
+            encoded.length, lessThan(bjdataEncode(table, config: const BjdataConfig(soa: BjdataSoaLayout.off)).length));
         expect(bjdataDecode(encoded), table);
       });
 
-      test('soa: BjdataSoaLayout.off writes a plain array of objects', () {
-        final encoded = bjdataEncode(table, soa: BjdataSoaLayout.off);
+      test('config: const BjdataConfig(soa: BjdataSoaLayout.off) writes a plain array of objects', () {
+        final encoded = bjdataEncode(table, config: const BjdataConfig(soa: BjdataSoaLayout.off));
         expect(encoded.sublist(0, 2), [M.arrayOpen.i, M.objectOpen.i]);
         expect(bjdataDecode(encoded), table);
       });
 
       test('decoding never depends on the flag', () {
-        expect(bjdataDecode(bjdataEncode(table)), bjdataDecode(bjdataEncode(table, soa: BjdataSoaLayout.off)));
+        expect(bjdataDecode(bjdataEncode(table)),
+            bjdataDecode(bjdataEncode(table, config: const BjdataConfig(soa: BjdataSoaLayout.off))));
       });
 
       test('gives up on self-referential values instead of recursing', () {
@@ -741,22 +743,22 @@ void main() {
       ];
 
       test('row-major is the default', () {
-        expect(bjdataEncode(records).hex, bjdataEncode(records, soa: BjdataSoaLayout.rowMajor).hex);
+        expect(bjdataEncode(records).hex, bjdataEncode(records, config: const BjdataConfig()).hex);
       });
 
       test('row-major opens with an array marker', () {
-        final encoded = bjdataEncode(records, soa: BjdataSoaLayout.rowMajor);
+        final encoded = bjdataEncode(records, config: const BjdataConfig());
         expect(encoded.sublist(0, 3), [M.arrayOpen.i, M.strongType.i, M.objectOpen.i]);
         expect(bjdataDecode(encoded), records);
       });
 
       test('column-major opens with an object marker', () {
-        final encoded = bjdataEncode(records, soa: BjdataSoaLayout.columnMajor);
+        final encoded = bjdataEncode(records, config: const BjdataConfig(soa: BjdataSoaLayout.columnMajor));
         expect(encoded.sublist(0, 3), [M.objectOpen.i, M.strongType.i, M.objectOpen.i]);
       });
 
       test('column-major decodes to a map of columns', () {
-        expect(bjdataDecode(bjdataEncode(records, soa: BjdataSoaLayout.columnMajor)), {
+        expect(bjdataDecode(bjdataEncode(records, config: const BjdataConfig(soa: BjdataSoaLayout.columnMajor))), {
           'id': [1, 2, 3],
           'name': ['Alice', 'Bob', 'Charlie'],
           'ok': [true, false, true],
@@ -764,8 +766,8 @@ void main() {
       });
 
       test('both layouts share a schema and a payload size', () {
-        final rows = bjdataEncode(records, soa: BjdataSoaLayout.rowMajor);
-        final columns = bjdataEncode(records, soa: BjdataSoaLayout.columnMajor);
+        final rows = bjdataEncode(records, config: const BjdataConfig());
+        final columns = bjdataEncode(records, config: const BjdataConfig(soa: BjdataSoaLayout.columnMajor));
         expect(columns.length, rows.length);
         // Identical but for the container marker and the order of the payload.
         expect(columns.sublist(1, 20), rows.sublist(1, 20));
@@ -778,7 +780,7 @@ void main() {
           {'a': 3, 'b': 4},
         ];
         List<int> payloadOf(BjdataSoaLayout layout) {
-          final encoded = bjdataEncode(table, soa: layout);
+          final encoded = bjdataEncode(table, config: BjdataConfig(soa: layout));
           return encoded.sublist(encoded.length - 4);
         }
 
@@ -793,7 +795,7 @@ void main() {
           {'s': 'ccc', 't': 'zzz'},
         ];
         for (final layout in [BjdataSoaLayout.rowMajor, BjdataSoaLayout.columnMajor]) {
-          final encoded = bjdataEncode(table, soa: layout);
+          final encoded = bjdataEncode(table, config: BjdataConfig(soa: layout));
           final decoded = bjdataDecode(encoded);
           final expected = layout == BjdataSoaLayout.rowMajor
               ? table
@@ -812,8 +814,8 @@ void main() {
               for (var c = 0; c < 3; c++) <String, Object?>{'x': r * 3 + c}
             ],
         ];
-        expect(bjdataDecode(bjdataEncode(grid, soa: BjdataSoaLayout.rowMajor)), grid);
-        expect(bjdataDecode(bjdataEncode(grid, soa: BjdataSoaLayout.columnMajor)), {
+        expect(bjdataDecode(bjdataEncode(grid, config: const BjdataConfig())), grid);
+        expect(bjdataDecode(bjdataEncode(grid, config: const BjdataConfig(soa: BjdataSoaLayout.columnMajor))), {
           'x': [
             [0, 1, 2],
             [3, 4, 5],
@@ -822,7 +824,7 @@ void main() {
       });
 
       test('off writes plain arrays of objects', () {
-        final encoded = bjdataEncode(records, soa: BjdataSoaLayout.off);
+        final encoded = bjdataEncode(records, config: const BjdataConfig(soa: BjdataSoaLayout.off));
         expect(encoded.sublist(0, 2), [M.arrayOpen.i, M.objectOpen.i]);
         expect(bjdataDecode(encoded), records);
       });
@@ -832,9 +834,9 @@ void main() {
           {'a': 1},
           {'a': 2},
         ];
-        expect(bjdataBlockNotation(table, soa: BjdataSoaLayout.rowMajor), '[[][\$][{][U][1][a][U][}][#][U][2][1][2]');
+        expect(bjdataBlockNotation(table, config: const BjdataConfig()), '[[][\$][{][U][1][a][U][}][#][U][2][1][2]');
         expect(
-          bjdataBlockNotation(table, soa: BjdataSoaLayout.columnMajor),
+          bjdataBlockNotation(table, config: const BjdataConfig(soa: BjdataSoaLayout.columnMajor)),
           '[{][\$][{][U][1][a][U][}][#][U][2][1][2]',
         );
       });
@@ -1260,12 +1262,12 @@ void main() {
         );
       });
 
-      test('soa: BjdataSoaLayout.off renders a plain array of objects', () {
+      test('config: const BjdataConfig(soa: BjdataSoaLayout.off) renders a plain array of objects', () {
         expect(
           bjdataBlockNotation([
             {'a': 1},
             {'a': 2},
-          ], soa: BjdataSoaLayout.off),
+          ], config: const BjdataConfig(soa: BjdataSoaLayout.off)),
           '[[][{][U][1][a][U][1][}][{][U][1][a][U][2][}][]]',
         );
       });
@@ -1321,6 +1323,141 @@ void main() {
         () => bjdataDecode([0x45, 0x01, M.uint8.i, 0]),
         throwsA(isA<FormatException>().having((e) => e.message, 'message', contains('extension'))),
       );
+    });
+  });
+
+  group('config', () {
+    final records = <Map<String, Object?>>[
+      {'a': 1},
+      {'a': 2},
+    ];
+    final grid = [
+      for (var r = 0; r < 2; r++)
+        [
+          for (var c = 0; c < 3; c++) <String, Object?>{'x': r * 3 + c}
+        ],
+    ];
+
+    bool isSoa(List<int> encoded) => encoded[1] == M.strongType.i;
+
+    group('version', () {
+      test('draft 4 is the default', () {
+        expect(const BjdataConfig().version, BjdataVersion.draft4);
+        expect(isSoa(bjdataEncode(records)), isTrue);
+      });
+
+      test('draft 3 writes no packed tables', () {
+        final encoded = bjdataEncode(records, config: BjdataConfig.draft3);
+        expect(isSoa(encoded), isFalse);
+        expect(bjdataDecode(encoded), records);
+      });
+
+      test('draft 3 overrides an explicitly requested layout', () {
+        for (final layout in BjdataSoaLayout.values) {
+          final config = BjdataConfig(version: BjdataVersion.draft3, soa: layout);
+          expect(config.effectiveSoa, BjdataSoaLayout.off, reason: '$layout');
+          expect(isSoa(bjdataEncode(records, config: config)), isFalse, reason: '$layout');
+        }
+      });
+
+      test('draft 3 output is identical to turning packing off', () {
+        expect(bjdataEncode(records, config: BjdataConfig.draft3).hex,
+            bjdataEncode(records, config: const BjdataConfig(soa: BjdataSoaLayout.off)).hex);
+      });
+
+      test('draft 3 leaves everything else alone', () {
+        // Structure-of-Arrays is the only draft 4 addition this library emits,
+        // so nothing but a packed table should differ between the revisions.
+        final value = {
+          'i': 42,
+          'd': 3.5,
+          'b': true,
+          'z': null,
+          's': 'héllo',
+          'h': BigInt.parse('123456789012345678901234567890'),
+          'l': [1, 2, 3],
+          'm': {'nested': 'x'},
+          'binary': ByteData.sublistView(Uint8List.fromList([1, 2, 3])),
+        };
+        expect(bjdataEncode(value, config: BjdataConfig.draft3).hex, bjdataEncode(value).hex);
+      });
+
+      test('decoding ignores the version', () {
+        final packed = bjdataEncode(records);
+        expect(bjdataDecode(packed), records);
+        expect(bjdataDecode(bjdataEncode(records, config: BjdataConfig.draft3)), records);
+      });
+    });
+
+    group('multi-dimensional packing', () {
+      test('is on by default', () {
+        expect(const BjdataConfig().multiDimensional, isTrue);
+        // A single container with a dimension array as its count.
+        expect(bjdataEncode(grid).hex, startsWith('5b247b'));
+        expect(bjdataDecode(bjdataEncode(grid)), grid);
+      });
+
+      test('off writes each inner table as its own container', () {
+        final encoded = bjdataEncode(grid, config: const BjdataConfig(multiDimensional: false));
+        // An ordinary array holding two packed tables, rather than one
+        // container counted by a dimension array.
+        expect(encoded.sublist(0, 4), [M.arrayOpen.i, M.arrayOpen.i, M.strongType.i, M.objectOpen.i]);
+        expect(bjdataDecode(encoded), grid);
+      });
+
+      test('off still packs flat tables', () {
+        final encoded = bjdataEncode(records, config: const BjdataConfig(multiDimensional: false));
+        expect(isSoa(encoded), isTrue);
+        expect(bjdataDecode(encoded), records);
+      });
+
+      test('off never writes a dimension array', () {
+        final encoded = bjdataEncode(grid, config: const BjdataConfig(multiDimensional: false));
+        // A dimension array is a count marker followed by an array marker.
+        for (var i = 0; i < encoded.length - 1; i++) {
+          expect(encoded[i] == M.count.i && encoded[i + 1] == M.arrayOpen.i, isFalse, reason: 'at $i');
+        }
+      });
+
+      test('applies to the column-major layout too', () {
+        const config = BjdataConfig(soa: BjdataSoaLayout.columnMajor, multiDimensional: false);
+        final encoded = bjdataEncode(grid, config: config);
+        expect(encoded.first, M.arrayOpen.i);
+        expect(bjdataDecode(encoded), [
+          {
+            'x': [0, 1, 2],
+          },
+          {
+            'x': [3, 4, 5],
+          },
+        ]);
+      });
+    });
+
+    test('copyWith replaces only what it is given', () {
+      const config = BjdataConfig(soa: BjdataSoaLayout.columnMajor, multiDimensional: false);
+      expect(
+          config.copyWith(version: BjdataVersion.draft3),
+          const BjdataConfig(
+            version: BjdataVersion.draft3,
+            soa: BjdataSoaLayout.columnMajor,
+            multiDimensional: false,
+          ));
+      expect(config.copyWith(), config);
+    });
+
+    test('presets say what they mean', () {
+      expect(BjdataConfig.draft3.version, BjdataVersion.draft3);
+      expect(BjdataConfig(soa: BjdataSoaLayout.off).soa, BjdataSoaLayout.off);
+      expect(BjdataConfig(multiDimensional: false).multiDimensional, isFalse);
+    });
+
+    test('is carried by the codec and its converters', () {
+      const codec = BjdataCodec(config: BjdataConfig(soa: BjdataSoaLayout.off));
+      expect(isSoa(codec.encode(records)), isFalse);
+      expect(isSoa(codec.encoder.convert(records)), isFalse);
+      // A per-call config overrides the one the codec was built with.
+      expect(isSoa(codec.encode(records, config: const BjdataConfig())), isTrue);
     });
   });
 

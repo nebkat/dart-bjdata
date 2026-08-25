@@ -56,6 +56,27 @@ bjdataEncode(records); // Structure-of-Arrays container
 bjdataDecode(encoded); // List<Map<String, Object?>>
 ```
 
+### Configuration
+
+Encoding takes a `BjdataConfig`, so the settings are declared once rather than threaded
+through call sites:
+
+```dart
+const config = BjdataConfig(
+    version: BjdataVersion.draft4,  // specification revision to stay within
+    soa: BjdataSoaLayout.rowMajor,  // how tables are packed
+    multiDimensional: true,         // may a dimension array be used as a count
+);
+
+bjdataEncode(value, config: config);
+
+// or set it once on a codec
+const codec = BjdataCodec(config: BjdataConfig.draft3);
+codec.encode(value);
+```
+
+Decoding accepts everything this library understands, so none of these affect it.
+
 ### Layout
 
 `soa` selects how the payload is arranged, or turns the packing off:
@@ -72,9 +93,9 @@ final table = [
     {'a': 3, 'b': 4},
 ];
 
-bjdataEncode(table);                                    // payload 1 2, 3 4
-bjdataEncode(table, soa: BjdataSoaLayout.columnMajor);  // payload 1 3, 2 4
-bjdataEncode(table, soa: BjdataSoaLayout.off);          // array of objects
+bjdataEncode(table); // payload 1 2, 3 4
+bjdataEncode(table, config: const BjdataConfig(soa: BjdataSoaLayout.columnMajor)); // 1 3, 2 4
+bjdataEncode(table, config: BjdataConfig(soa: BjdataSoaLayout.off)); // array of objects
 ```
 
 The two SoA layouts carry the same schema and exactly as many payload bytes, so the choice
@@ -109,6 +130,27 @@ bjdataEncode(grid);    // [${x:U}#[U2 U3] followed by six packed records
 bjdataDecode(encoded); // the same 2x3 nesting of records
 ```
 
+Dimension-array counts (`#[Nx Ny ...]`) are a draft 3 construct, older than the packed
+tables that are currently the only thing this library writes them for. Set
+`multiDimensional: false` for a consumer that reads a container counted by an integer but
+not one counted by a dimension array; each inner table is then packed on its own inside an
+ordinary array, so the values are unchanged either way.
+
+### Compatibility
+
+`version` is a ceiling on what may be written. `BjdataVersion.draft3` never writes packed
+tables, whatever layout is asked for, since a draft 3 reader cannot parse them:
+
+```dart
+bjdataEncode(records, config: BjdataConfig.draft3); // array of objects
+```
+
+Structure-of-Arrays is the only draft 4 addition this library emits — extension types (`E`)
+are not implemented — so draft 3 and draft 4 output is byte-identical for everything else,
+and `BjdataConfig.draft3` and `BjdataConfig(soa: BjdataSoaLayout.off)` currently produce the same bytes.
+Prefer `draft3` when the reason is the consumer's age, so that later revisions stay capped
+too.
+
 ### What gets packed
 
 A list is packed only when every record agrees, so the decoded values are always identical
@@ -134,7 +176,7 @@ Detection is a single pass over the list, and it is cheaper than what it saves. 
 
 | | Time | Size |
 |---|---|---|
-| `BjdataSoaLayout.off` | 70 ms | 5.5 MB |
+| `BjdataConfig(soa: BjdataSoaLayout.off)` | 70 ms | 5.5 MB |
 | default (`rowMajor`) | 51 ms | 2.4 MB |
 | default, table rejected on the last field | 92 ms | 5.5 MB |
 
@@ -155,9 +197,9 @@ dart pub global run bjdata -h
 # Encode a JSON file to BJData
 bjdata encode input.json output.bjda
 
-# Pack tables by field instead of by record, or not at all
+# Options: --draft=N, --no-soa, --column-major, --no-nd
 bjdata encode input.json output.bjd --column-major
-bjdata encode input.json output.bjd --no-soa
+bjdata encode input.json output.bjd --draft=3
 
 # Decode a BJData file to JSON
 bjdata decode input.bjd output.json
@@ -176,10 +218,9 @@ echo -n "[1, 2, 3]" | bjdata print
 ### Decoding BJData to Dart
 - N-dimensional arrays (`#[Nx Ny ...]`) decode to nested lists, with the innermost axis
   kept as the typed list. Both row-major and column-major (`#[[Nx Ny ...]]`) orderings are
-  read; a column-major payload is reordered so that it reads the same way. Encoding an
-  N-dimensional *array* is not supported — only
-  [SoA containers](#structure-of-arrays) are written with a dimension array — so a decoded
-  array is written back as nested arrays.
+  read; a column-major payload is reordered so that it reads the same way. Writing a
+  dimension array is only supported for [SoA containers](#structure-of-arrays), so a
+  decoded N-dimensional array is written back as nested arrays.
 - Extension types (`E`) are not supported and are rejected with a `FormatException`.
 
 | BJData Type      | Marker | Dart                           |
@@ -249,9 +290,9 @@ echo -n "[1, 2, 3]" | bjdata print
 | `List<Map>`   | `[${`     | `soa` (row-major) [†](#soa-note)               |
 | `List<Map>`   | `{${`     | `soa` (column-major) [†](#soa-note)            |
 
-<a name="soa-note">†</a> See [Structure-of-Arrays](#structure-of-arrays). The layout is
-    chosen with `soa:`, which also turns the packing off. Column-major containers decode to
-    a map of columns rather than a list of records.
+<a name="soa-note">†</a> See [Structure-of-Arrays](#structure-of-arrays). The layout, the
+    specification revision and N-dimensional packing are all chosen with `config:`.
+    Column-major containers decode to a map of columns rather than a list of records.
 
 <a name="encode-int-notice">\*</a>
     `int` values are encoded using the smallest integer type possible, favouring unsigned types.
