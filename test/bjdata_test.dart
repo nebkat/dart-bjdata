@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:bjdata/bjdata.dart';
 import 'package:bjdata/src/encoder/sink.dart';
 import 'package:bjdata/src/marker.dart';
+import 'package:bjdata/src/packing.dart';
 import 'package:bjdata/src/soa.dart';
 import 'package:test/test.dart';
 
@@ -54,12 +55,13 @@ void main() {
       ((int), 'm', -9223372036854775808, '4c0000000000000080'),
       // ((int), 'M', 9223372036854775808, '4d0000000000000080'),
       // ((int), 'M', 18446744073709551615, '4dffffffffffffffff'),
-      ((double), 'D', double.infinity, '44000000000000f07f'),
-      ((double), 'D', double.negativeInfinity, '44000000000000f0ff'),
-      if (1 is! double) ((double), 'D', 0.0, '440000000000000000'),
-      if (1 is! double) ((double), 'D', -0.0, '440000000000000080'),
-      if (1 is! double) ((double), 'D', 1.0, '44000000000000f03f'),
-      if (1 is! double) ((double), 'D', -1.0, '44000000000000f0bf'),
+      // Narrowed to float16, which holds each of these unchanged.
+      ((double), 'h', double.infinity, '68007c'),
+      ((double), 'h', double.negativeInfinity, '6800fc'),
+      if (1 is! double) ((double), 'h', 0.0, '680000'),
+      if (1 is! double) ((double), 'h', -0.0, '680080'),
+      if (1 is! double) ((double), 'h', 1.0, '68003c'),
+      if (1 is! double) ((double), 'h', -1.0, '6800bc'),
       ((double), 'D', pi, '44182d4454fb210940'),
       ((String), 'S', '', '535500'),
       ((String), 'S', 'hello', '53550568656c6c6f'),
@@ -414,16 +416,21 @@ void main() {
           });
 
           test('round-trips three dimensions', () {
+            // 0.1 is exact in neither float32 nor float16, so the array keeps
+            // its type and the bytes survive unchanged.
+            final payload = Uint8List.sublistView(Float64List.fromList(List.filled(8, 0.1)));
             final encoded = [
               M.arrayOpen.i, M.strongType.i, M.float64.i, M.count.i, //
               M.arrayOpen.i, M.uint8.i, 2, M.uint8.i, 2, M.uint8.i, 2, M.arrayClose.i,
-              ...List.filled(64, 0),
+              ...payload,
             ];
             expect(bjdataEncode(bjdataDecode(encoded)).hex, encoded.hex);
           });
 
           test('is smaller than nesting the rows', () {
-            final rows = [Float64List(4), Float64List(4), Float64List(4)];
+            final rows = [
+              for (var i = 0; i < 3; i++) Float64List.fromList(List.filled(4, 0.1)),
+            ];
             expect(
               bjdataEncode(rows).length,
               lessThan(bjdataEncode(rows, config: const BjdataConfig(multiDimensional: false)).length),
@@ -431,18 +438,63 @@ void main() {
           });
 
           test('handles every typed list', () {
+            final bigValue = int.parse('1234605617868164317');
+            Uint8List u8(List<int> v) => Uint8List.fromList(v);
+            Int8List i8(List<int> v) => Int8List.fromList(v);
+            Uint16List u16(List<int> v) => Uint16List.fromList(v);
+            Int16List i16(List<int> v) => Int16List.fromList(v);
+            Uint32List u32(List<int> v) => Uint32List.fromList(v);
+            Int32List i32(List<int> v) => Int32List.fromList(v);
+            Uint64List u64(List<int> v) => Uint64List.fromList(v);
+            Int64List i64(List<int> v) => Int64List.fromList(v);
+            Float32List f32(List<double> v) => Float32List.fromList(v);
+            Float64List f64(List<double> v) => Float64List.fromList(v);
             final rows = <String, List<TypedData>>{
+              // Each filled with a value only its own type holds, so nothing is
+              // narrowed and every type is exercised as itself.
               'ByteData': [ByteData(2), ByteData(2)],
-              'Uint8List': [Uint8List(2), Uint8List(2)],
-              'Int8List': [Int8List(2), Int8List(2)],
-              'Uint16List': [Uint16List(2), Uint16List(2)],
-              'Int16List': [Int16List(2), Int16List(2)],
-              'Uint32List': [Uint32List(2), Uint32List(2)],
-              'Int32List': [Int32List(2), Int32List(2)],
-              'Float32List': [Float32List(2), Float32List(2)],
-              'Float64List': [Float64List(2), Float64List(2)],
-              if (1 is! double) 'Uint64List': [Uint64List(2), Uint64List(2)],
-              if (1 is! double) 'Int64List': [Int64List(2), Int64List(2)],
+              'Uint8List': [
+                u8([255, 255]),
+                u8([255, 255])
+              ],
+              'Int8List': [
+                i8([-128, -128]),
+                i8([-128, -128])
+              ],
+              'Uint16List': [
+                u16([65535, 65535]),
+                u16([65535, 65535])
+              ],
+              'Int16List': [
+                i16([-32768, -32768]),
+                i16([-32768, -32768])
+              ],
+              'Uint32List': [
+                u32([4294967295, 4294967295]),
+                u32([4294967295, 4294967295])
+              ],
+              'Int32List': [
+                i32([-2147483648, -2147483648]),
+                i32([-2147483648, -2147483648])
+              ],
+              'Float32List': [
+                f32([1e10, 1e10]),
+                f32([1e10, 1e10])
+              ],
+              'Float64List': [
+                f64([0.1, 0.1]),
+                f64([0.1, 0.1])
+              ],
+              if (1 is! double)
+                'Uint64List': [
+                  u64([bigValue, bigValue]),
+                  u64([bigValue, bigValue])
+                ],
+              if (1 is! double)
+                'Int64List': [
+                  i64([-bigValue, -bigValue]),
+                  i64([-bigValue, -bigValue])
+                ],
             };
             rows.forEach((reason, value) {
               final encoded = bjdataEncode(value);
@@ -1339,14 +1391,75 @@ void main() {
         expect(markerFor([-1, 70000]), M.int32);
       });
 
-      test('chooses dictionary or offset storage by repetition', () {
+      test('stores strings in a dictionary, whatever their repetition', () {
         BjdataSoaType typeFor(List<String> values) => BjdataSoaSchema.tryInfer([
               for (final v in values) {'a': v},
             ])!
                 .fields['a']!;
 
-        expect(typeFor(['a', 'b', 'a', 'b']), isA<BjdataSoaDictionaryType>());
-        expect(typeFor(['a', 'bb', 'ccc']), isA<BjdataSoaOffsetType>());
+        expect(typeFor(['aa', 'bb', 'aa', 'bb']), isA<BjdataSoaDictionaryType>());
+        expect(typeFor(['aa', 'bbb', 'cccc']), isA<BjdataSoaDictionaryType>());
+        expect(typeFor(['', 'x', '']), isA<BjdataSoaDictionaryType>());
+      });
+
+      test('stores single-character columns as char', () {
+        final schema = BjdataSoaSchema.tryInfer([
+          for (var i = 0; i < 4; i++) {'a': String.fromCharCode(0x61 + i), 'b': 'no$i'},
+        ])!;
+        expect(schema.fields['a'], BjdataSoaValueType(M.char));
+        expect(schema.fields['b'], isA<BjdataSoaDictionaryType>());
+
+        // One payload byte per record, and nothing in the schema for it.
+        final records = [
+          for (var i = 0; i < 4; i++) <String, Object?>{'a': String.fromCharCode(0x61 + i)}
+        ];
+        final encoded = bjdataEncode(records);
+        expect(encoded.sublist(encoded.length - 4), 'abcd'.codeUnits);
+        expect(bjdataDecode(encoded), records);
+      });
+
+      test('a non-ASCII or multi-character value is not a char column', () {
+        BjdataSoaType typeFor(List<String> values) => BjdataSoaSchema.tryInfer([
+              for (final v in values) {'a': v},
+            ])!
+                .fields['a']!;
+
+        expect(typeFor(['a', 'é']), isA<BjdataSoaDictionaryType>());
+        expect(typeFor(['a', '\u{1F600}']), isA<BjdataSoaDictionaryType>());
+        expect(typeFor(['a', '']), isA<BjdataSoaDictionaryType>());
+        expect(typeFor(['a', 'bc']), isA<BjdataSoaDictionaryType>());
+      });
+
+      test('utf-8 byte lengths match what the encoder writes', () {
+        for (final value in [
+          '',
+          'ascii',
+          'naïve',
+          '日本語',
+          '\u{1F600}\u{1F1EC}\u{1F1E7}', // surrogate pairs
+          'mixed ü 日 \u{1F600} end',
+          'lone high \uD800 surrogate',
+          'lone low \uDC00 surrogate',
+        ]) {
+          expect(bjdataUtf8ByteLength(value), utf8.encode(value).length, reason: value);
+        }
+      });
+
+      test('stores more strings than an index can address in an offset table', () {
+        // One distinct value past the dictionary limit, repeated so that the
+        // buffer has something to share.
+        const repeated = 'a-repeated-name';
+        final records = <Map<String, Object?>>[
+          for (var i = 0; i <= 65535; i++) {'name': 'unique-$i'},
+          for (var i = 0; i < 3; i++) {'name': repeated},
+        ];
+        expect(BjdataSoaSchema.tryInfer(records)!.fields['name'], isA<BjdataSoaOffsetType>());
+
+        final encoded = bjdataEncode(records);
+        // The buffer carries the repeated value once; the records that share it
+        // store the same offset-table slot.
+        expect(repeated.allMatches(String.fromCharCodes(encoded)).length, 1);
+        expect(bjdataDecode(encoded), records);
       });
 
       test('never chooses lossy fixed-length strings', () {
@@ -1367,13 +1480,11 @@ void main() {
           ], indent: '  '),
           '[[][\$][{]\n'
           '  [U][2][id][U]\n'
-          '  [U][4][name][[][\$][U][]]\n'
+          '  [U][4][name][[][\$][S][#][U][2][U][5][Alice][U][3][Bob]\n'
           '  [U][2][ok][T]\n'
           '[}][#][U][2]\n'
           '  [1][0][T]\n'
-          '  [2][1][F]\n'
-          '  [0][5][8]\n'
-          '  [Alice][Bob]\n',
+          '  [2][1][F]\n',
         );
       });
 
@@ -1438,6 +1549,177 @@ void main() {
         () => bjdataDecode([0x45, 0x01, M.uint8.i, 0]),
         throwsA(isA<FormatException>().having((e) => e.message, 'message', contains('extension'))),
       );
+    });
+  });
+
+  group('compact types', () {
+    int size(Object? value, {BjdataConfig config = const BjdataConfig()}) => bjdataEncode(value, config: config).length;
+    int plain(Object? value) => size(value, config: const BjdataConfig(compactTypes: false));
+
+    group('scalars', () {
+      // On the web a double with no fractional part is an int, and is encoded
+      // as one, so only the fractional cases are shared by both platforms.
+      if (1 is! double) {
+        test('a double narrows to the smallest float holding it unchanged', () {
+          expect(bjdataEncode(1.0).hex, '68003c'); // float16
+          expect(bjdataEncode(1e10).hex.substring(0, 2), M.float32.i.toRadixString(16));
+          expect(bjdataEncode(0.1).hex.substring(0, 2), M.float64.i.toRadixString(16));
+        });
+
+        test('off keeps float64', () {
+          expect(bjdataEncode(1.0, config: const BjdataConfig(compactTypes: false)).hex, '44000000000000f03f');
+        });
+      }
+
+      test('the value is unchanged whatever it narrows to', () {
+        final values = [
+          -1.5,
+          0.1,
+          double.infinity,
+          double.negativeInfinity,
+          if (1 is! double) ...[0.0, -0.0, 1.0, 1e10, 65504.0, 1e300],
+        ];
+        for (final value in values) {
+          expect(bjdataDecode(bjdataEncode(value)), value, reason: '$value');
+        }
+        expect((bjdataDecode(bjdataEncode(double.nan)) as double).isNaN, isTrue);
+      });
+    });
+
+    group('typed lists', () {
+      test('narrow to the smallest type holding every value', () {
+        // Values all fit a byte, so four bytes each becomes one.
+        final wide = Uint32List.fromList([1, 2, 3, 4, 5, 6, 7, 8]);
+        expect(bjdataEncode(wide)[2], M.uint8.i);
+        expect(bjdataDecode(bjdataEncode(wide)), wide);
+        expect(size(wide), lessThan(plain(wide)));
+      });
+
+      test('do not change type when nothing is gained', () {
+        // A positive int64 fits uint64 equally well, so leave it as it is.
+        if (1 is! double) {
+          final value = Int64List.fromList([int.parse('1234605617868164317')]);
+          expect(bjdataEncode(value)[2], M.int64.i);
+        }
+        // Already as narrow as it goes.
+        expect(bjdataEncode(Uint8List.fromList([1, 2, 3]))[2], M.uint8.i);
+      });
+
+      test('stay strongly typed even where a generic array would be smaller', () {
+        // One large value forces a wide type, which a generic array would beat.
+        // Passing typed data is a request for a typed array, so it stays one.
+        final value = Uint32List.fromList([1, 2, 3, 1000000]);
+        expect(bjdataEncode(value)[1], M.strongType.i);
+        expect(bjdataDecode(bjdataEncode(value)), value);
+      });
+
+      test('narrow floats only when every value survives', () {
+        final narrowable = Float64List.fromList([1.5, 2.25, -3.0, 1024.0]);
+        expect(bjdataEncode(narrowable)[2], M.float16.i);
+        expect(bjdataDecode(bjdataEncode(narrowable)), narrowable);
+
+        final notNarrowable = Float64List.fromList([0.1, 0.2, 0.3]);
+        expect(bjdataEncode(notNarrowable)[2], M.float64.i);
+        expect(bjdataDecode(bjdataEncode(notNarrowable)), notNarrowable);
+      });
+
+      test('leave ByteData alone', () {
+        final bytes = ByteData.sublistView(Uint8List.fromList([1, 2, 3]));
+        expect(bjdataEncode(bytes)[2], M.byte.i);
+        expect(bjdataDecode(bjdataEncode(bytes)), isA<ByteData>());
+      });
+
+      test('leave an empty buffer alone', () {
+        expect(bjdataEncode(Uint32List(0))[2], M.uint32.i);
+        expect(bjdataDecode(bjdataEncode(Uint32List(0))), isA<Uint32List>());
+      });
+
+      test('off keeps the declared type', () {
+        final wide = Uint32List.fromList([1, 2, 3, 4]);
+        expect(bjdataEncode(wide, config: const BjdataConfig(compactTypes: false))[2], M.uint32.i);
+        expect(bjdataDecode(bjdataEncode(wide, config: const BjdataConfig(compactTypes: false))), isA<Uint32List>());
+      });
+    });
+
+    group('plain lists', () {
+      test('pack when a strong type is smaller', () {
+        final many = [for (var i = 0; i < 1000; i++) i % 200];
+        expect(bjdataEncode(many)[1], M.strongType.i);
+        expect(bjdataDecode(bjdataEncode(many)), many);
+        expect(size(many), lessThan(plain(many) ~/ 1.9)); // close to half
+      });
+
+      test('stay generic when a strong type would be larger', () {
+        // A strong type must be wide enough for the largest value and pays that
+        // width throughout, which one big value among small ones does not repay.
+        final uneven = [1, 2, 3, 1000000];
+        expect(bjdataEncode(uneven)[1], isNot(M.strongType.i));
+        expect(size(uneven), lessThan(4 + 4 * 5));
+        expect(bjdataDecode(bjdataEncode(uneven)), uneven);
+      });
+
+      test('stay generic on a tie, so nothing changes for nothing', () {
+        // Four uint16 values cost the same either way.
+        final tied = [52445, 43707, 13124, 4386];
+        expect(bjdataEncode(tied)[1], isNot(M.strongType.i));
+        expect(bjdataDecode(bjdataEncode(tied)), tied);
+      });
+
+      test('pack doubles too', () {
+        final many = [for (var i = 0; i < 100; i++) i / 2];
+        expect(bjdataEncode(many)[1], M.strongType.i);
+        expect(bjdataDecode(bjdataEncode(many)), many);
+      });
+
+      test('leave mixed and non-numeric lists alone', () {
+        for (final value in <List<Object?>>[
+          [1, 2.5, 3], // mixing int and double would change the ints to doubles
+          [1, 'x'],
+          [1, null],
+          ['a', 'b'],
+          <Object?>[],
+        ]) {
+          expect(bjdataEncode(value)[1], isNot(M.strongType.i), reason: '$value');
+          expect(bjdataDecode(bjdataEncode(value)), value, reason: '$value');
+        }
+      });
+
+      test('off leaves every list generic', () {
+        final many = [for (var i = 0; i < 1000; i++) i % 200];
+        expect(bjdataEncode(many, config: const BjdataConfig(compactTypes: false))[1], isNot(M.strongType.i));
+      });
+    });
+
+    group('packed tables and n-dimensional arrays', () {
+      test('a float column narrows to what holds it', () {
+        // Columns are inferred rather than implied by a Dart type, so they are
+        // always as narrow as the values allow.
+        final table = [
+          {'v': 1.5},
+          {'v': 2.5},
+        ];
+        expect(bjdataDecode(bjdataEncode(table)), table);
+        expect(size(table), lessThan(2 + 2 * 9));
+      });
+
+      test('an n-dimensional array narrows across every row at once', () {
+        final rows = [
+          Float64List.fromList([1.5, 2.5]),
+          Float64List.fromList([3.5, 4.5])
+        ];
+        // float16 holds all four, so the payload is 2 bytes an element, not 8.
+        expect(bjdataEncode(rows)[2], M.float16.i);
+        expect(bjdataDecode(bjdataEncode(rows)), rows);
+      });
+
+      test('an n-dimensional array keeps its type when a row resists narrowing', () {
+        final rows = [
+          Float64List.fromList([1.5, 2.5]),
+          Float64List.fromList([0.1, 4.5])
+        ];
+        expect(bjdataEncode(rows)[2], M.float64.i);
+        expect(bjdataDecode(bjdataEncode(rows)), rows);
+      });
     });
   });
 
@@ -1564,10 +1846,13 @@ void main() {
       expect(config.copyWith(), config);
     });
 
-    test('presets say what they mean', () {
+    test('draft3 is a whole configuration, not a change to one', () {
       expect(BjdataConfig.draft3.version, BjdataVersion.draft3);
-      expect(BjdataConfig(soa: BjdataSoaLayout.off).soa, BjdataSoaLayout.off);
-      expect(BjdataConfig(multiDimensional: false).multiDimensional, isFalse);
+      // The other settings take their defaults rather than being carried over,
+      // which is why there is no preset for changing a single setting.
+      expect(BjdataConfig.draft3.soa, const BjdataConfig().soa);
+      expect(BjdataConfig.draft3.multiDimensional, const BjdataConfig().multiDimensional);
+      expect(BjdataConfig.draft3.compactTypes, const BjdataConfig().compactTypes);
     });
 
     test('draft4 names what the defaults already do', () {

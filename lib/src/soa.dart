@@ -1,7 +1,7 @@
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'marker.dart';
+import 'packing.dart';
 
 /// How a list that is a uniform table of records is written.
 ///
@@ -170,6 +170,14 @@ final class BjdataSoaDictionaryType extends BjdataSoaType {
       throw ArgumentError.value(countMarker, 'countMarker', 'Not an integer marker');
     }
   }
+
+  /// The index of every entry, for the writer that has to find one per record.
+  ///
+  /// Built on first use, since only encoding needs it: decoding indexes [values]
+  /// directly.
+  late final Map<Object, int> indices = {
+    for (var i = 0; i < values.length; i++) values[i]: i,
+  };
 
   /// The unsigned integer marker used to store indices in the payload.
   ///
@@ -344,7 +352,8 @@ final class BjdataSoaSchema {
   /// - `bool` fields become [BjdataSoaBooleanType]
   /// - `int` fields use the smallest integer marker covering their range,
   ///   favouring unsigned types
-  /// - `double` fields become `float64`
+  /// - `double` fields become the narrowest float type holding every value
+  ///   unchanged
   /// - `String` fields become a [BjdataSoaDictionaryType] when at most half the
   ///   values are distinct, and a [BjdataSoaOffsetType] otherwise
   /// - `BigInt` fields become a high-precision [BjdataSoaDictionaryType]
@@ -408,28 +417,41 @@ final class BjdataSoaSchema {
         if (value < min) min = value;
         if (value > max) max = value;
       }
-      return BjdataSoaValueType(_integerMarker(min, max));
+      return BjdataSoaValueType(bjdataIntegerMarker(min, max));
     }
 
     if (first is double) {
       for (final value in values) {
         if (value is! double) return null;
       }
-      return BjdataSoaValueType(BjdataMarker.float64);
+      // Narrowed only as far as every value survives unchanged. A column decodes
+      // to a double whatever width it was stored at, so this costs nothing.
+      return BjdataSoaValueType(bjdataFloatMarker(values.cast<double>()));
     }
 
     if (first is String) {
       final distinct = <String>{};
       var bufferLength = 0;
+      var allChars = true;
       for (final value in values) {
         if (value is! String) return null;
-        distinct.add(value);
-        bufferLength += utf8.encode(value).length;
+        // `C` holds one ASCII code point, which is a single UTF-16 code unit.
+        if (allChars && (value.length != 1 || value.codeUnitAt(0) > 127)) allChars = false;
+        if (distinct.add(value)) bufferLength += bjdataUtf8ByteLength(value);
       }
-      if (distinct.length * 2 <= values.length) {
+
+      // A column of single characters is what `C` is for: one payload byte per
+      // record, and nothing in the schema for either a dictionary or a table.
+      if (allChars) return BjdataSoaValueType(BjdataMarker.char);
+
+      // A dictionary holds each distinct value once and indexes it per record,
+      // which is both smaller and simpler than an offset table for anything a
+      // general-purpose encoder sees. Past the entry count an index can address,
+      // the strings belong after the payload rather than in the schema.
+      if (distinct.length <= _maxSoaDictionaryEntries) {
         return BjdataSoaDictionaryType(distinct.toList(growable: false));
       }
-      return BjdataSoaOffsetType(_integerMarker(0, bufferLength));
+      return BjdataSoaOffsetType(bjdataIntegerMarker(0, bufferLength));
     }
 
     if (first is BigInt) {
@@ -483,17 +505,6 @@ final class BjdataSoaSchema {
     return null;
   }
 
-  static BjdataMarker _integerMarker(int min, int max) => switch ((min, max)) {
-        (>= 0, <= 255) => BjdataMarker.uint8,
-        (>= -128, <= 127) => BjdataMarker.int8,
-        (>= 0, <= 65535) => BjdataMarker.uint16,
-        (>= -32768, <= 32767) => BjdataMarker.int16,
-        (>= 0, <= 4294967295) => BjdataMarker.uint32,
-        (>= -2147483648, <= 2147483647) => BjdataMarker.int32,
-        (>= 0, _) => BjdataMarker.uint64,
-        _ => BjdataMarker.int64,
-      };
-
   @override
   bool operator ==(Object other) =>
       other is BjdataSoaSchema &&
@@ -526,6 +537,14 @@ class BjdataSoaCandidate {
 /// A single record needs a schema about as large as the object it replaces, so
 /// it is never smaller than a plain array of objects.
 const int _minimumSoaRecords = 2;
+
+/// The largest dictionary [BjdataSoaSchema.tryInfer] will build for a string
+/// column, past which it stores the strings in an offset table instead.
+///
+/// Beyond this a dictionary needs indices wider than `uint16`, which is also
+/// where the reference implementation stops writing them, and it puts an
+/// unbounded amount of text in a schema a reader must parse before any record.
+const int _maxSoaDictionaryEntries = 65535;
 
 /// The deepest nesting examined while looking for a table.
 ///
