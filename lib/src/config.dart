@@ -32,23 +32,20 @@ final class BjdataConfig {
   /// Whether a container may be counted by a dimension array (`#[Nx Ny ...]`)
   /// rather than by a single integer.
   ///
-  /// Dimension arrays are a draft 3 construct, older than the packed tables that
-  /// are currently the only thing this library writes them for: a rectangular
-  /// nesting of records becomes one N-dimensional container. When false, only
-  /// flat tables are packed and nested ones are written as nested arrays, each
-  /// of which may still be packed on its own, so the values are unchanged either
-  /// way.
+  /// Dimension arrays are a draft 3 construct, and two things are written with
+  /// one: a rectangular nesting of typed rows such as a `List<Float64List>`
+  /// becomes one N-dimensional array, and a rectangular nesting of records
+  /// becomes one N-dimensional packed table.
   ///
-  /// Turn it off for consumers that read a container counted by an integer but
-  /// not one counted by a dimension array.
+  /// When false, neither is collapsed; the nesting is written as nested arrays,
+  /// each of which may still be packed on its own, so the values are unchanged
+  /// either way. Turn it off for consumers that read a container counted by an
+  /// integer but not one counted by a dimension array.
   final bool multiDimensional;
 
   /// Output a BJData draft 3 reader can parse, with no Structure-of-Arrays
   /// containers.
   ///
-  /// Named settings like this one describe a whole configuration, so the other
-  /// fields take their defaults. To change one setting of an existing
-  /// configuration, use [copyWith].  ///
   /// Named settings like this one describe a whole configuration, so the other
   /// fields take their defaults. To change one setting of an existing
   /// configuration, use [copyWith].
