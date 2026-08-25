@@ -35,7 +35,7 @@ void main() {
     {'id': 2, 'name': 'Bob', 'active': false},
   ];
   print(bjdataBlockNotation(records, indent: '  '));
-  print(bjdataEncode(records, soa: BjdataSoaLayout.off).length); // 62
+  print(bjdataEncode(records, config: const BjdataConfig(soa: BjdataSoaLayout.off)).length); // 62
   print(bjdataEncode(records).length); // 48
   print(bjdataDecode(bjdataEncode(records))); // the same records
 
@@ -57,6 +57,6 @@ void main() {
 
   // Column-major packs each field contiguously instead. It holds the same bytes
   // in a different order, and decodes to a map of columns rather than records.
-  print(bjdataBlockNotation(records, soa: BjdataSoaLayout.columnMajor));
-  print(bjdataDecode(bjdataEncode(records, soa: BjdataSoaLayout.columnMajor)));
+  print(bjdataBlockNotation(records, config: const BjdataConfig(soa: BjdataSoaLayout.columnMajor)));
+  print(bjdataDecode(bjdataEncode(records, config: const BjdataConfig(soa: BjdataSoaLayout.columnMajor))));
 }
