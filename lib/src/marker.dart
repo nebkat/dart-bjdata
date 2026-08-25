@@ -69,4 +69,7 @@ enum BjdataMarker {
 
   /// Whether this marker is a valid strong type (for typed containers).
   bool get isValidStrongType => index >= BjdataMarker.uint8.index && index <= BjdataMarker.byte.index;
+
+  /// Whether this marker is an integer type.
+  bool get isIntegerType => index >= BjdataMarker.uint8.index && index <= BjdataMarker.int64.index;
 }

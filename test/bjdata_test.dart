@@ -225,6 +225,219 @@ void main() {
         }
       });
 
+      group('n-dimensional array', () {
+        // The 2x3x4 uint8 array from the specification's worked example.
+        const expected = [
+          [
+            [1, 9, 6, 0],
+            [2, 9, 3, 1],
+            [8, 0, 9, 6],
+          ],
+          [
+            [6, 4, 2, 7],
+            [8, 5, 1, 2],
+            [3, 3, 2, 6],
+          ],
+        ];
+        const rowMajorData = [1, 9, 6, 0, 2, 9, 3, 1, 8, 0, 9, 6, 6, 4, 2, 7, 8, 5, 1, 2, 3, 3, 2, 6];
+        const columnMajorData = [1, 6, 2, 8, 8, 3, 9, 4, 9, 5, 0, 3, 6, 2, 3, 1, 9, 2, 0, 7, 1, 2, 6, 6];
+
+        /// `[$U#` followed by [count], the dimension array and the payload.
+        List<int> uint8Array(List<int> count, List<int> data) => [
+              M.arrayOpen.i, M.strongType.i, M.uint8.i, M.count.i, //
+              ...count,
+              ...data,
+            ];
+
+        /// An optimized dimension array, `[$U#<n>` with no closing bracket.
+        List<int> optimizedDims(List<int> dimensions) => [
+              M.arrayOpen.i, M.strongType.i, M.uint8.i, M.count.i, M.uint8.i, dimensions.length, //
+              ...dimensions,
+            ];
+
+        /// A plain dimension array, each entry with its own marker.
+        List<int> plainDims(List<int> dimensions) => [
+              M.arrayOpen.i, //
+              for (final dimension in dimensions) ...[M.uint8.i, dimension],
+              M.arrayClose.i,
+            ];
+
+        test('decodes the specification example in row-major order', () {
+          expect(bjdataDecode(uint8Array(optimizedDims([2, 3, 4]), rowMajorData)), expected);
+        });
+
+        test('decodes the specification example in column-major order', () {
+          // The dimension array wrapped in a single element array.
+          final count = [
+            M.arrayOpen.i,
+            ...optimizedDims([2, 3, 4]),
+            M.arrayClose.i
+          ];
+          expect(bjdataDecode(uint8Array(count, columnMajorData)), expected);
+        });
+
+        test('accepts optimized and non-optimized dimension arrays alike', () {
+          expect(bjdataDecode(uint8Array(plainDims([2, 3, 4]), rowMajorData)), expected);
+          expect(
+            bjdataDecode(uint8Array(plainDims([2, 3, 4]), rowMajorData)),
+            bjdataDecode(uint8Array(optimizedDims([2, 3, 4]), rowMajorData)),
+          );
+        });
+
+        test('accepts a non-optimized wrapper around the dimension array', () {
+          final count = [
+            M.arrayOpen.i,
+            ...plainDims([2, 3, 4]),
+            M.arrayClose.i
+          ];
+          expect(bjdataDecode(uint8Array(count, columnMajorData)), expected);
+        });
+
+        test('keeps the innermost axis as a typed list', () {
+          final decoded = bjdataDecode(uint8Array(optimizedDims([2, 3, 4]), rowMajorData));
+          expect(decoded, isA<List>());
+          expect(decoded[0], isA<List>());
+          expect(decoded[0][0], isA<Uint8List>());
+          expect(decoded[0][0], [1, 9, 6, 0]);
+        });
+
+        test('slices the payload rather than copying it', () {
+          final decoded = bjdataDecode(uint8Array(optimizedDims([2, 3, 4]), rowMajorData));
+          final first = decoded[0][0] as Uint8List;
+          final last = decoded[1][2] as Uint8List;
+          // One buffer holding all 24 elements, viewed at different offsets.
+          expect(first.offsetInBytes, 0);
+          expect(last.offsetInBytes, 20);
+          expect(first.buffer.lengthInBytes, 24);
+        });
+
+        test('a single dimension behaves like a plain count', () {
+          final decoded = bjdataDecode(uint8Array(optimizedDims([4]), [1, 2, 3, 4]));
+          expect(decoded, isA<Uint8List>());
+          expect(decoded, [1, 2, 3, 4]);
+        });
+
+        test('handles every strong type', () {
+          final types = <BjdataMarker, int>{
+            M.byte: 1,
+            M.int8: 1,
+            M.uint16: 2,
+            M.int16: 2,
+            M.uint32: 4,
+            M.int32: 4,
+            M.float32: 4,
+            M.float64: 8,
+            M.float16: 2,
+            if (1 is! double) M.uint64: 8,
+            if (1 is! double) M.int64: 8,
+          };
+          types.forEach((marker, size) {
+            final encoded = [
+              M.arrayOpen.i, M.strongType.i, marker.i, M.count.i, //
+              ...optimizedDims([2, 2]),
+              ...List.filled(4 * size, 0),
+            ];
+            final decoded = bjdataDecode(encoded);
+            // Two rows, each still a typed view onto the one payload.
+            expect((decoded as List).length, 2, reason: '$marker');
+            expect(decoded[0], isA<TypedData>(), reason: '$marker');
+          });
+        });
+
+        test('reorders column-major payloads of wider types', () {
+          // A 2x2 int16 array, stored column-major as 1 3 2 4.
+          final data = <int>[];
+          for (final value in [1, 3, 2, 4]) {
+            data.addAll([value, 0]);
+          }
+          final encoded = [
+            M.arrayOpen.i, M.strongType.i, M.int16.i, M.count.i, //
+            M.arrayOpen.i, ...optimizedDims([2, 2]), M.arrayClose.i,
+            ...data,
+          ];
+          expect(bjdataDecode(encoded), [
+            [1, 2],
+            [3, 4],
+          ]);
+        });
+
+        test('reshapes containers that are not strongly typed', () {
+          // char is excluded from the packed path, so it exercises the element loop.
+          final chars = [
+            M.arrayOpen.i, M.strongType.i, M.char.i, M.count.i, //
+            ...plainDims([2, 2]),
+            0x61, 0x62, 0x63, 0x64,
+          ];
+          expect(bjdataDecode(chars), [
+            ['a', 'b'],
+            ['c', 'd'],
+          ]);
+
+          final mixed = [
+            M.arrayOpen.i, M.count.i, ...plainDims([2, 2]), //
+            M.uint8.i, 1, M.true_.i, M.null_.i, M.string.i, M.uint8.i, 1, 0x78,
+          ];
+          expect(bjdataDecode(mixed), [
+            [1, true],
+            [null, 'x'],
+          ]);
+        });
+
+        test('rejects malformed dimensions', () {
+          final entries = <String, List<int>>{
+            'an empty dimension array': [
+              M.arrayOpen.i,
+              M.strongType.i,
+              M.uint8.i,
+              M.count.i,
+              M.arrayOpen.i,
+              M.arrayClose.i,
+            ],
+            'a negative dimension': [
+              M.arrayOpen.i,
+              M.strongType.i,
+              M.uint8.i,
+              M.count.i,
+              M.arrayOpen.i,
+              M.int8.i,
+              0xFF,
+              M.arrayClose.i,
+            ],
+            'a non-integer dimension type': [
+              M.arrayOpen.i, M.strongType.i, M.uint8.i, M.count.i, //
+              M.arrayOpen.i, M.strongType.i, M.float64.i, M.count.i, M.uint8.i, 1, ...List.filled(8, 0),
+            ],
+            'an unclosed column-major wrapper': [
+              M.arrayOpen.i, M.strongType.i, M.uint8.i, M.count.i, //
+              M.arrayOpen.i, ...plainDims([2]), M.uint8.i, 1, 2,
+            ],
+            'an object counted by dimensions': [
+              M.objectOpen.i, M.strongType.i, M.uint8.i, M.count.i, ...plainDims([1]), //
+              M.uint8.i, 1, 0x61, 1,
+            ],
+            'a payload shorter than the dimensions': [
+              M.arrayOpen.i,
+              M.strongType.i,
+              M.uint8.i,
+              M.count.i,
+              ...plainDims([2, 3]),
+              1,
+              2,
+            ],
+          };
+          entries.forEach((reason, entry) {
+            expect(() => bjdataDecode(entry), throwsA(isA<FormatException>()), reason: reason);
+          });
+        });
+
+        test('re-encodes as nested arrays', () {
+          // Encoding N-dimensional containers is not supported, so a decoded array
+          // is written back as an array of arrays. The values are unchanged.
+          final decoded = bjdataDecode(uint8Array(optimizedDims([2, 3, 4]), rowMajorData));
+          expect(bjdataDecode(bjdataEncode(decoded)), expected);
+        });
+      });
+
       group('invalid', () {
         test('type', () {
           List<int> emptyStrongTypeOf(M m) => [

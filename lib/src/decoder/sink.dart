@@ -64,6 +64,9 @@ class BjdataReader {
   }
 
   Uint8List _readUint8ListView(int length) {
+    if (_offset + length > _bytes.lengthInBytes) {
+      throw FormatException("Unexpected end of input", _bytes, _bytes.lengthInBytes);
+    }
     final view = Uint8List.sublistView(_bytes, _offset, _offset + length);
     _offset += length;
     return view;
@@ -187,20 +190,21 @@ class BjdataReader {
     };
   }
 
+  int _readIntForMarker(BjdataMarker marker, String what, int offsetBefore) => switch (marker) {
+        BjdataMarker.uint8 => _readUint8(),
+        BjdataMarker.int8 => _readInt8(),
+        BjdataMarker.uint16 => _readUint16(),
+        BjdataMarker.int16 => _readInt16(),
+        BjdataMarker.uint32 => _readUint32(),
+        BjdataMarker.int32 => _readInt32(),
+        BjdataMarker.uint64 => _readUint64(),
+        BjdataMarker.int64 => _readInt64(),
+        _ => throw FormatException('Unexpected non-$what type marker: $marker', _bytes, offsetBefore),
+      };
+
   int _readLength() {
     final offsetBefore = _offset;
-    final marker = _readMarker();
-    final length = switch (marker) {
-      BjdataMarker.uint8 => _readUint8(),
-      BjdataMarker.int8 => _readInt8(),
-      BjdataMarker.uint16 => _readUint16(),
-      BjdataMarker.int16 => _readInt16(),
-      BjdataMarker.uint32 => _readUint32(),
-      BjdataMarker.int32 => _readInt32(),
-      BjdataMarker.uint64 => _readUint64(),
-      BjdataMarker.int64 => _readInt64(),
-      _ => throw FormatException('Unexpected non-length type marker: $marker', _bytes, offsetBefore),
-    };
+    final length = _readIntForMarker(_readMarker(), 'length', offsetBefore);
     if (length < 0) throw FormatException('Negative length: $length', _bytes, offsetBefore);
     return length;
   }
@@ -279,9 +283,67 @@ class BjdataReader {
   BigInt _readHuge() => BigInt.parse(_readString());
   String _readString() => utf8.decode(_readUint8ListView(_readLength()));
 
-  (BjdataMarker?, int?) _readStrongTypeAndCount() {
+  /// The element count of a container, and the dimensions it was given as.
+  ///
+  /// A count is either a single integer, a dimension array (`#[Nx Ny ...]`) for
+  /// an N-dimensional array serialized in row-major order, or a dimension array
+  /// wrapped in a single element array (`#[[Nx Ny ...]]`) for one serialized in
+  /// column-major order, as MATLAB and FORTRAN write it.
+  ({int count, List<int>? dimensions, bool columnMajor}) _readCount() {
+    final offsetBefore = _offset;
+    if (!_peekMarkerConsumeIf(BjdataMarker.arrayOpen)) {
+      return (count: _readLength(), dimensions: null, columnMajor: false);
+    }
+
+    // A second '[' wraps the dimension array, which marks column-major order.
+    final columnMajor = _peekMarker() == BjdataMarker.arrayOpen;
+    if (columnMajor) _offset++;
+
+    final dimensions = _readDimensions(offsetBefore);
+
+    if (columnMajor && !_peekMarkerConsumeIf(BjdataMarker.arrayClose)) {
+      throw FormatException('Expected end of the wrapped dimension array', _bytes, _offset);
+    }
+    return (
+      count: dimensions.fold(1, (a, b) => a * b),
+      dimensions: dimensions,
+      columnMajor: columnMajor,
+    );
+  }
+
+  /// Reads a dimension array, with its leading `[` already consumed.
+  List<int> _readDimensions(int offsetBefore) {
     BjdataMarker? strongType;
     int? count;
+
+    if (_peekMarkerConsumeIf(BjdataMarker.strongType)) {
+      strongType = _readMarker();
+      if (!strongType.isIntegerType) {
+        throw FormatException('Dimensions must be of an integer type: $strongType', _bytes, _offset - 1);
+      }
+      if (!_peekMarkerConsumeIf(BjdataMarker.count)) {
+        throw FormatException('Expected count marker to follow strong type', _bytes, _offset);
+      }
+      count = _readLength();
+    } else if (_peekMarkerConsumeIf(BjdataMarker.count)) {
+      count = _readLength();
+    }
+
+    final dimensions = <int>[];
+    for (var i = 0; count != null ? i < count : true; i++) {
+      if (count == null && _peekMarkerConsumeIf(BjdataMarker.arrayClose)) break;
+      final before = _offset;
+      final dimension = _readIntForMarker(strongType ?? _readMarker(), 'dimension', before);
+      if (dimension < 0) throw FormatException('Negative dimension: $dimension', _bytes, before);
+      dimensions.add(dimension);
+    }
+    if (dimensions.isEmpty) throw FormatException('Empty dimension array', _bytes, offsetBefore);
+    return dimensions;
+  }
+
+  ({BjdataMarker? strongType, int? count, List<int>? dimensions, bool columnMajor}) _readStrongTypeAndCount() {
+    BjdataMarker? strongType;
+    const int? count = null;
 
     if (_peekMarkerConsumeIf(BjdataMarker.strongType)) {
       // Read strong type
@@ -302,21 +364,23 @@ class BjdataReader {
       }
 
       // Read count
-      count = _readLength();
+      final (:count, :dimensions, :columnMajor) = _readCount();
+      return (strongType: strongType, count: count, dimensions: dimensions, columnMajor: columnMajor);
     } else if (_peekMarkerConsumeIf(BjdataMarker.count)) {
       // Read count
-      count = _readLength();
+      final (:count, :dimensions, :columnMajor) = _readCount();
+      return (strongType: strongType, count: count, dimensions: dimensions, columnMajor: columnMajor);
     }
 
-    return (strongType, count);
+    return (strongType: strongType, count: count, dimensions: null, columnMajor: false);
   }
 
   Object _readArray() {
     final offsetBefore = _offset - 1;
-    final (strongType, count) = _readStrongTypeAndCount();
+    final (:strongType, :count, :dimensions, :columnMajor) = _readStrongTypeAndCount();
 
     if (strongType != null && strongType.isValidStrongType && strongType != BjdataMarker.char) {
-      return switch (strongType) {
+      final flat = switch (strongType) {
         BjdataMarker.byte => _readByteDataCopy(count!),
         BjdataMarker.uint8 => _readUint8ListCopy(count!),
         BjdataMarker.int8 => _readInt8ListCopy(count!),
@@ -331,6 +395,8 @@ class BjdataReader {
         BjdataMarker.float64 => _readFloat64ListCopy(count!),
         _ => throw FormatException('Invalid strong type: $strongType', _bytes, offsetBefore),
       };
+      if (dimensions == null) return flat;
+      return _reshape(columnMajor ? _toRowMajor(flat, dimensions) : flat, dimensions, 0);
     }
 
     final list = <Object?>[];
@@ -340,11 +406,111 @@ class BjdataReader {
       final value = _readValueForMarker(strongType ?? _readMarker());
       list.add(_reviver == null ? value : _reviver!(i, value));
     }
-    return list;
+    if (dimensions == null) return list;
+    return _reshape(columnMajor ? _toRowMajor(list, dimensions) : list, dimensions, 0);
   }
 
+  /// Nests [flat] according to [dimensions], one list per axis.
+  ///
+  /// Slices are views onto [flat] wherever it is a typed list, so an
+  /// N-dimensional array still holds a single contiguous buffer once decoded.
+  Object _reshape(Object flat, List<int> dimensions, int axis) {
+    if (axis == dimensions.length - 1) return flat;
+
+    var stride = 1;
+    for (var i = axis + 1; i < dimensions.length; i++) {
+      stride *= dimensions[i];
+    }
+    return [
+      for (var i = 0; i < dimensions[axis]; i++)
+        _reshape(_slice(flat, i * stride, (i + 1) * stride), dimensions, axis + 1),
+    ];
+  }
+
+  /// A view of [list] from [start] to [end], keeping its type.
+  Object _slice(Object list, int start, int end) => switch (list) {
+        ByteData l => ByteData.sublistView(l, start, end),
+        Uint8List l => Uint8List.sublistView(l, start, end),
+        Int8List l => Int8List.sublistView(l, start, end),
+        Uint16List l => Uint16List.sublistView(l, start, end),
+        Int16List l => Int16List.sublistView(l, start, end),
+        Uint32List l => Uint32List.sublistView(l, start, end),
+        Int32List l => Int32List.sublistView(l, start, end),
+        Float32List l => Float32List.sublistView(l, start, end),
+        Float64List l => Float64List.sublistView(l, start, end),
+        // Not reachable on the web, where 64 bit lists decode as List<int>.
+        Uint64List l => Uint64List.sublistView(l, start, end),
+        Int64List l => Int64List.sublistView(l, start, end),
+        List l => l.sublist(start, end),
+        _ => throw FormatException('Cannot reshape ${list.runtimeType}', _bytes, _offset),
+      };
+
+  /// Reorders column-major [flat] into row-major order.
+  ///
+  /// The elements are permuted rather than reinterpreted, so the result reads
+  /// the same way a row-major array of the same shape would.
+  Object _toRowMajor(Object flat, List<int> dimensions) {
+    final rank = dimensions.length;
+    if (rank < 2) return flat;
+
+    // In column-major order the first axis varies fastest.
+    final strides = List<int>.filled(rank, 1);
+    for (var axis = 1; axis < rank; axis++) {
+      strides[axis] = strides[axis - 1] * dimensions[axis - 1];
+    }
+
+    final total = dimensions.fold(1, (a, b) => a * b);
+    final source = List<int>.filled(total, 0);
+    final indices = List<int>.filled(rank, 0);
+    for (var i = 0; i < total; i++) {
+      var offset = 0;
+      for (var axis = 0; axis < rank; axis++) {
+        offset += indices[axis] * strides[axis];
+      }
+      source[i] = offset;
+      // Step through the output in row-major order, last axis fastest.
+      for (var axis = rank - 1; axis >= 0; axis--) {
+        if (++indices[axis] < dimensions[axis]) break;
+        indices[axis] = 0;
+      }
+    }
+
+    if (flat is List) return [for (final index in source) flat[index]];
+
+    // Permute whole elements, whatever their width, and reinterpret the result
+    // as the same kind of list.
+    final data = flat as TypedData;
+    final size = data.elementSizeInBytes;
+    final bytes = Uint8List.sublistView(data);
+    final reordered = Uint8List(bytes.length);
+    for (var i = 0; i < total; i++) {
+      reordered.setRange(i * size, (i + 1) * size, bytes, source[i] * size);
+    }
+    return _sameTypeAs(data, reordered);
+  }
+
+  /// Reinterprets [bytes] as the same kind of list as [like].
+  Object _sameTypeAs(TypedData like, Uint8List bytes) => switch (like) {
+        ByteData() => ByteData.sublistView(bytes),
+        Uint8List() => bytes,
+        Int8List() => Int8List.sublistView(bytes),
+        Uint16List() => Uint16List.sublistView(bytes),
+        Int16List() => Int16List.sublistView(bytes),
+        Uint32List() => Uint32List.sublistView(bytes),
+        Int32List() => Int32List.sublistView(bytes),
+        Float32List() => Float32List.sublistView(bytes),
+        Float64List() => Float64List.sublistView(bytes),
+        Uint64List() => Uint64List.sublistView(bytes),
+        Int64List() => Int64List.sublistView(bytes),
+        _ => throw FormatException('Cannot reorder ${like.runtimeType}', _bytes, _offset),
+      };
+
   Map<String, Object?>? _readMap() {
-    final (strongType, count) = _readStrongTypeAndCount();
+    final offsetBefore = _offset;
+    final (:strongType, :count, :dimensions, columnMajor: _) = _readStrongTypeAndCount();
+    if (dimensions != null) {
+      throw FormatException('An object cannot be counted by a dimension array', _bytes, offsetBefore);
+    }
 
     final map = <String, Object?>{};
     for (var i = 0; count != null ? i < count : true; i++) {
