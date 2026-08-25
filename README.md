@@ -64,7 +64,10 @@ echo -n "[1, 2, 3]" | bjdata print
 ## Types
 
 ### Decoding BJData to Dart
-- Multi dimensional arrays are not yet supported.
+- N-dimensional arrays (`#[Nx Ny ...]`) decode to nested lists, with the innermost axis
+  kept as the typed list. Both row-major and column-major (`#[[Nx Ny ...]]`) orderings are
+  read; a column-major payload is reordered so that it reads the same way. Encoding
+  N-dimensional arrays is not yet supported, so they are written back as nested arrays.
 
 | BJData Type      | Marker | Dart                           |
 |------------------|--------|--------------------------------|
@@ -100,6 +103,7 @@ echo -n "[1, 2, 3]" | bjdata print
 | `array[float32]` | `[$d`  | `Float32List`                  |
 | `array[float64]` | `[$D`  | `Float64List`                  |
 | `object`         | `{}`   | `Map`                          |
+| `array[T]` N-D   | `#[`   | Nested `List` of `T`           |
 
 <a name="decode-int-warning">\*</a>
     Warning: `int` in Dart is a signed 64-bit integer. `uint64`/`M` values are decoded as `int64`
