@@ -27,6 +27,11 @@
     writes Structure-of-Arrays containers, whatever layout is requested. SoA is the only
     draft 4 addition this library emits, so draft 3 and draft 4 output is otherwise
     byte-identical
+- Write N-dimensional arrays as well as read them: a rectangular nesting of typed lists
+  of the same type and length, such as a `List<Float64List>`, is written as one array
+  counted by a dimension array rather than as an array of arrays. This makes a decoded
+  N-dimensional array round-trip to the same bytes. As with a flat list, only typed data
+  is packed, so a `List<List<double>>` is unaffected
 - Reject extension types (`E`) with an explicit `FormatException`; they are not implemented
 - Fix string length prefixes counting UTF-16 code units instead of UTF-8 bytes, which
   produced undecodable output for any non-ASCII string

@@ -386,6 +386,132 @@ void main() {
           ]);
         });
 
+        group('encoding', () {
+          /// Whether [encoded] is a container counted by a dimension array.
+          bool isNd(List<int> encoded) =>
+              encoded.length > 4 &&
+              encoded[0] == M.arrayOpen.i &&
+              encoded[1] == M.strongType.i &&
+              encoded[3] == M.count.i &&
+              encoded[4] == M.arrayOpen.i;
+
+          test('writes a rectangular nesting of typed rows as one array', () {
+            final rows = [
+              Uint8List.fromList([1, 2, 3]),
+              Uint8List.fromList([4, 5, 6]),
+            ];
+            expect(bjdataEncode(rows).hex, '5b2455235b550255035d010203040506');
+            expect(bjdataDecode(bjdataEncode(rows)), rows);
+          });
+
+          test('round-trips what the decoder produces', () {
+            final encoded = [
+              M.arrayOpen.i, M.strongType.i, M.uint8.i, M.count.i, //
+              M.arrayOpen.i, M.uint8.i, 2, M.uint8.i, 3, M.arrayClose.i,
+              1, 2, 3, 4, 5, 6,
+            ];
+            expect(bjdataEncode(bjdataDecode(encoded)).hex, encoded.hex);
+          });
+
+          test('round-trips three dimensions', () {
+            final encoded = [
+              M.arrayOpen.i, M.strongType.i, M.float64.i, M.count.i, //
+              M.arrayOpen.i, M.uint8.i, 2, M.uint8.i, 2, M.uint8.i, 2, M.arrayClose.i,
+              ...List.filled(64, 0),
+            ];
+            expect(bjdataEncode(bjdataDecode(encoded)).hex, encoded.hex);
+          });
+
+          test('is smaller than nesting the rows', () {
+            final rows = [Float64List(4), Float64List(4), Float64List(4)];
+            expect(
+              bjdataEncode(rows).length,
+              lessThan(bjdataEncode(rows, config: const BjdataConfig(multiDimensional: false)).length),
+            );
+          });
+
+          test('handles every typed list', () {
+            final rows = <String, List<TypedData>>{
+              'ByteData': [ByteData(2), ByteData(2)],
+              'Uint8List': [Uint8List(2), Uint8List(2)],
+              'Int8List': [Int8List(2), Int8List(2)],
+              'Uint16List': [Uint16List(2), Uint16List(2)],
+              'Int16List': [Int16List(2), Int16List(2)],
+              'Uint32List': [Uint32List(2), Uint32List(2)],
+              'Int32List': [Int32List(2), Int32List(2)],
+              'Float32List': [Float32List(2), Float32List(2)],
+              'Float64List': [Float64List(2), Float64List(2)],
+              if (1 is! double) 'Uint64List': [Uint64List(2), Uint64List(2)],
+              if (1 is! double) 'Int64List': [Int64List(2), Int64List(2)],
+            };
+            rows.forEach((reason, value) {
+              final encoded = bjdataEncode(value);
+              expect(isNd(encoded), isTrue, reason: reason);
+              // ByteData has no value equality, so compare the bytes throughout.
+              final decoded = bjdataDecode(encoded) as List;
+              expect(decoded.length, value.length, reason: reason);
+              for (var i = 0; i < value.length; i++) {
+                expect(
+                  Uint8List.sublistView(decoded[i] as TypedData),
+                  Uint8List.sublistView(value[i]),
+                  reason: '$reason row $i',
+                );
+              }
+            });
+          });
+
+          test('leaves anything that is not a rectangular typed nesting alone', () {
+            final untouched = <String, List<Object?>>{
+              'rows of differing lengths': [Float64List(3), Float64List(2)],
+              'rows of differing types': [Float64List(3), Float32List(3)],
+              'a single row': [Float64List(3)],
+              'empty rows': [Float64List(0), Float64List(0)],
+              'an empty list': <Object?>[],
+              // Matching how a flat list is written: only typed data is packed.
+              'plain lists of numbers': [
+                [1, 2],
+                [3, 4],
+              ],
+              'rows mixed with other values': [Float64List(2), 'x'],
+              'ragged nesting': [
+                [Uint8List(2)],
+                [Uint8List(2), Uint8List(2)],
+              ],
+            };
+            untouched.forEach((reason, value) {
+              final encoded = bjdataEncode(value);
+              expect(isNd(encoded), isFalse, reason: reason);
+              expect(bjdataDecode(encoded), value, reason: reason);
+            });
+          });
+
+          test('gives up on self-referential lists instead of recursing', () {
+            final list = <Object?>[];
+            list.add(list);
+            expect(() => bjdataEncode(list), throwsA(isA<BjdataCyclicError>()));
+          });
+
+          test('is governed by multiDimensional, not by the version', () {
+            final rows = [Float64List(2), Float64List(2)];
+            // N-dimensional arrays are a draft 3 construct, so capping the version
+            // at draft 3 leaves them alone.
+            expect(isNd(bjdataEncode(rows, config: BjdataConfig.draft3)), isTrue);
+            expect(isNd(bjdataEncode(rows, config: const BjdataConfig(soa: BjdataSoaLayout.off))), isTrue);
+            expect(isNd(bjdataEncode(rows, config: const BjdataConfig(multiDimensional: false))), isFalse);
+            expect(bjdataDecode(bjdataEncode(rows, config: const BjdataConfig(multiDimensional: false))), rows);
+          });
+
+          test('renders in block notation', () {
+            expect(
+              bjdataBlockNotation([
+                Uint8List.fromList([1, 2]),
+                Uint8List.fromList([3, 4]),
+              ]),
+              '[[][\$][U][#][[][U][2][U][2][]][1][2][3][4]',
+            );
+          });
+        });
+
         test('rejects malformed dimensions', () {
           final entries = <String, List<int>>{
             'an empty dimension array': [

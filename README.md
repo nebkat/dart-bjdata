@@ -130,11 +130,11 @@ bjdataEncode(grid);    // [${x:U}#[U2 U3] followed by six packed records
 bjdataDecode(encoded); // the same 2x3 nesting of records
 ```
 
-Dimension-array counts (`#[Nx Ny ...]`) are a draft 3 construct, older than the packed
-tables that are currently the only thing this library writes them for. Set
-`multiDimensional: false` for a consumer that reads a container counted by an integer but
-not one counted by a dimension array; each inner table is then packed on its own inside an
-ordinary array, so the values are unchanged either way.
+Dimension-array counts (`#[Nx Ny ...]`) are a draft 3 construct, and are also what a
+rectangular nesting of typed rows is written with. Set `multiDimensional: false` for a
+consumer that reads a container counted by an integer but not one counted by a dimension
+array; each inner table is then packed on its own inside an ordinary array, so the values
+are unchanged either way.
 
 ### Compatibility
 
@@ -218,9 +218,8 @@ echo -n "[1, 2, 3]" | bjdata print
 ### Decoding BJData to Dart
 - N-dimensional arrays (`#[Nx Ny ...]`) decode to nested lists, with the innermost axis
   kept as the typed list. Both row-major and column-major (`#[[Nx Ny ...]]`) orderings are
-  read; a column-major payload is reordered so that it reads the same way. Writing a
-  dimension array is only supported for [SoA containers](#structure-of-arrays), so a
-  decoded N-dimensional array is written back as nested arrays.
+  read; a column-major payload is reordered so that it reads the same way. Only the
+  row-major form is written.
 - Extension types (`E`) are not supported and are rejected with a `FormatException`.
 
 | BJData Type      | Marker | Dart                           |
@@ -257,7 +256,7 @@ echo -n "[1, 2, 3]" | bjdata print
 | `array[float32]` | `[$d`  | `Float32List`                  |
 | `array[float64]` | `[$D`  | `Float64List`                  |
 | `object`         | `{}`   | `Map`                          |
-| `array[T]` N-D   | `#[`   | Nested `List` of `T`           |
+| `array[T]` N-D   | `#[`   | Nested `List` of `T` [‡](#nd-note) |
 | `soa[rows]`      | `[${`  | `List<Map>` [†](#soa-note)     |
 | `soa[columns]`   | `{${`  | `Map<String, List>` [†](#soa-note) |
 
@@ -287,8 +286,14 @@ echo -n "[1, 2, 3]" | bjdata print
 | `Float32List` | `[$d`     | `array[float32]`                               |
 | `Float64List` | `[$D`     | `array[float64]`                               |
 | `Map`         | `{}`      | `object`                                       |
+| nested typed  | `#[`      | `array[T]` N-D [‡](#nd-note)                   |
 | `List<Map>`   | `[${`     | `soa` (row-major) [†](#soa-note)               |
 | `List<Map>`   | `{${`     | `soa` (column-major) [†](#soa-note)            |
+
+<a name="nd-note">‡</a> A rectangular nesting of typed lists of the same type and length,
+    such as a `List<Float64List>`, is written as one N-dimensional array. Only typed data
+    is packed this way, matching how a flat list is written, so a `List<List<double>>`
+    stays a nested array. Pass `BjdataConfig(multiDimensional: false)` to opt out.
 
 <a name="soa-note">†</a> See [Structure-of-Arrays](#structure-of-arrays). The layout, the
     specification revision and N-dimensional packing are all chosen with `config:`.

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import '../error.dart';
 import '../marker.dart';
+import '../nd.dart';
 import '../config.dart';
 import '../soa.dart';
 
@@ -182,8 +183,11 @@ abstract class _BjdataWriter<T> {
         final layout = _config.effectiveSoa;
         final soa =
             layout == BjdataSoaLayout.off ? null : tryBjdataSoaCandidate(l, multiDimensional: _config.multiDimensional);
+        final nd = soa == null && _config.multiDimensional ? tryBjdataNdCandidate(l) : null;
         if (soa != null) {
           writeSoa(soa, layout);
+        } else if (nd != null) {
+          writeNdArray(nd);
         } else {
           writeList(l);
         }
@@ -331,6 +335,27 @@ abstract class _BjdataWriter<T> {
 
   /// Serialize a [TypedData] buffer
   void writeTypedDataContents(TypedData buffer);
+
+  /// Serialize a rectangular nesting of typed rows as one N-dimensional array.
+  ///
+  /// The rows are written end to end in row-major order behind a dimension array
+  /// count, so the result holds the same values as the nesting it replaces while
+  /// carrying one container header rather than one per row.
+  void writeNdArray(BjdataNdCandidate nd) {
+    writeMarker(BjdataMarker.arrayOpen);
+    writeMarker(BjdataMarker.strongType);
+    writeMarker(nd.marker);
+    writeMarker(BjdataMarker.count);
+    writeMarker(BjdataMarker.arrayOpen);
+    for (final dimension in nd.dimensions) {
+      writeInt(dimension);
+    }
+    writeMarker(BjdataMarker.arrayClose);
+
+    for (final row in nd.rows) {
+      writeTypedDataContents(row);
+    }
+  }
 
   /// Begins a nested output block. Only meaningful for block notation output.
   void enterBlock() {}
