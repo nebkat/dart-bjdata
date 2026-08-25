@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../marker.dart';
+import '../packing.dart';
 import '../soa.dart';
 
 // /// Implements the chunked conversion from a UTF-8 encoding of JSON
@@ -256,34 +257,7 @@ class BjdataReader {
     }
   }
 
-  double _readFloat16() {
-    final int f16 = _readUint16();
-
-    final int sign = (f16 >> 15) & 0x1;
-    final int exp = (f16 >> 10) & 0x1F;
-    final int frac = f16 & 0x03FF;
-
-    final f32 = switch (exp) {
-      // Signed zero
-      0 when frac == 0 => sign << 31,
-      // Subnormal
-      0 when frac != 0 => ((int frac) {
-          int exp = 1;
-          while ((frac & 0x0400) == 0) {
-            frac <<= 1;
-            exp -= 1;
-          }
-          frac &= 0x03FF;
-          return (sign << 31) | ((exp + 112) << 23) | (frac << 13);
-        })(frac),
-      // Inf/NaN
-      0x1F => sign << 31 | (0xFF << 23) | (frac << 13),
-      // Normal
-      _ => (sign << 31) | ((exp + 112) << 23) | (frac << 13),
-    };
-
-    return (ByteData(4)..setUint32(0, f32, Endian.little)).getFloat32(0, Endian.little);
-  }
+  double _readFloat16() => bjdataFloat16ToDouble(_readUint16());
 
   double _readFloat32() => _bytes.getFloat32(_offsetIncrement(4), Endian.little);
   double _readFloat64() => _bytes.getFloat64(_offsetIncrement(8), Endian.little);

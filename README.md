@@ -66,6 +66,7 @@ const config = BjdataConfig(
     version: BjdataVersion.draft4,  // specification revision to stay within
     soa: BjdataSoaLayout.rowMajor,  // how tables are packed
     multiDimensional: true,         // may a dimension array be used as a count
+    compactTypes: true,             // may a value be written as a smaller type
 );
 
 bjdataEncode(value, config: config);
@@ -95,7 +96,7 @@ final table = [
 
 bjdataEncode(table); // payload 1 2, 3 4
 bjdataEncode(table, config: const BjdataConfig(soa: BjdataSoaLayout.columnMajor)); // 1 3, 2 4
-bjdataEncode(table, config: BjdataConfig(soa: BjdataSoaLayout.off)); // array of objects
+bjdataEncode(table, config: const BjdataConfig(soa: BjdataSoaLayout.off)); // array of objects
 ```
 
 The two SoA layouts carry the same schema and exactly as many payload bytes, so the choice
@@ -169,6 +170,43 @@ to what you passed in. Anything else is written as a plain array of objects:
 A single record is never packed, because its schema costs about as much as the object it
 would replace.
 
+### Compact types
+
+The encoder picks the type marker that stores a value in the fewest bytes, rather than the
+one its Dart type implies. Values are always preserved exactly; what can change is the Dart
+type they decode back to.
+
+```dart
+bjdataEncode([for (var i = 0; i < 10000; i++) i % 200]);
+// [$U#… rather than a generic array: 20002 -> 10007 bytes, decodes as a Uint8List
+
+bjdataEncode(Uint32List.fromList(small));   // written as uint8, 75% smaller
+bjdataEncode(Float64List.fromList(halves)); // written as float16, 50% smaller
+bjdataEncode(1.0);                          // float16, 9 bytes -> 3
+```
+
+A type is only changed when that actually saves bytes, so a positive `Int64List` is not
+swapped for `uint64` and a tie leaves the encoding alone. Floats narrow only when every
+value survives the narrower type unchanged, so `[0.1, 0.2]` stays `float64`. Typed data
+stays a strongly-typed array: passing a `Uint32List` is itself a request for one, and a
+generic array only beats it on a handful of elements. Plain lists have both forms measured,
+which is why a list of small numbers packs while `[1, 2, 3, 1000000]` does not — a strong
+type must be wide enough for its largest value and pays that width throughout.
+
+`byte` is never re-chosen. It is already the narrowest width, so nothing could be gained,
+and the specification gives it a meaning of its own.
+
+Pass `BjdataConfig(compactTypes: false)` when the decoded Dart types matter as much as the
+values.
+
+| | off | on |
+|---|---|---|
+| `List<int>`, 10k small values | 20002 | **10007** |
+| `Uint32List`, all values < 256 | 20007 | **5007** |
+| `Float64List` of halves | 40007 | **20007** |
+| `Float64List` of real measurements | 40007 | 40007 |
+| 200×50 matrix | 80010 | **40010** |
+
 ### Cost
 
 Detection is a single pass over the list, and it is cheaper than what it saves. Encoding
@@ -176,7 +214,7 @@ Detection is a single pass over the list, and it is cheaper than what it saves. 
 
 | | Time | Size |
 |---|---|---|
-| `BjdataConfig(soa: BjdataSoaLayout.off)` | 70 ms | 5.5 MB |
+| `soa: BjdataSoaLayout.off` | 70 ms | 5.5 MB |
 | default (`rowMajor`) | 51 ms | 2.4 MB |
 | default, table rejected on the last field | 92 ms | 5.5 MB |
 

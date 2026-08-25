@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'marker.dart';
+import 'packing.dart';
 
 /// The strong type marker for [buffer], or null if it is not a kind of typed
 /// data BJData can store.
@@ -58,10 +59,35 @@ const int _maxNdDepth = 64;
 /// [Float64List] becomes an optimized array while a `List<double>` does not, so
 /// a `List<Float64List>` becomes an N-dimensional array while a
 /// `List<List<double>>` stays a nested array.
-BjdataNdCandidate? tryBjdataNdCandidate(List<Object?> list) {
+BjdataNdCandidate? tryBjdataNdCandidate(List<Object?> list, {bool compactTypes = true}) {
   final shape = _tryShape(list, 0);
   if (shape == null || shape.rows.length < _minimumNdRows) return null;
-  return BjdataNdCandidate(shape.marker, shape.dimensions, shape.rows);
+
+  var marker = shape.marker;
+  if (compactTypes) {
+    // Narrow across every row at once, so the array keeps one type throughout.
+    final narrowed = _narrowestMarker(shape.rows);
+    if (narrowed != null && narrowed.fixedByteLength! < marker.fixedByteLength!) marker = narrowed;
+  }
+  return BjdataNdCandidate(marker, shape.dimensions, shape.rows);
+}
+
+/// The narrowest strong type holding every value of every row unchanged.
+BjdataMarker? _narrowestMarker(List<TypedData> rows) {
+  if (rows.first is Float32List || rows.first is Float64List) {
+    return bjdataFloatMarker([for (final row in rows) ...(row as List<double>)]);
+  }
+  if (rows.first is ByteData) return null;
+
+  var min = 0;
+  var max = 0;
+  for (final row in rows) {
+    for (final value in row as List<int>) {
+      if (value < min) min = value;
+      if (value > max) max = value;
+    }
+  }
+  return bjdataIntegerMarker(min, max);
 }
 
 ({BjdataMarker marker, List<int> dimensions, List<TypedData> rows})? _tryShape(List<Object?> list, int depth) {

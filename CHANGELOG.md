@@ -32,6 +32,20 @@
   counted by a dimension array rather than as an array of arrays. This makes a decoded
   N-dimensional array round-trip to the same bytes. As with a flat list, only typed data
   is packed, so a `List<List<double>>` is unaffected
+- Choose type markers by size rather than by the Dart type a value happens to have,
+  controlled by `BjdataConfig.compactTypes` (on by default, `BjdataConfig(compactTypes: false)`
+  to turn it off)
+  - A `List<int>` of small numbers is written as a `uint8` array, halving it; a `Uint32List`
+    whose values all fit a byte is written as `uint8`, quartering it; a `Float64List` whose
+    values all survive `float16` is written as `float16`
+  - A strong type must be wide enough for its largest value while a generic array stores
+    each value at its own width, so both are measured for plain lists: `[1, 2, 3, 1000000]`
+    stays generic because a `uint32` array would be larger
+  - Values are always preserved exactly and floats only narrow when every value survives
+    unchanged. What can change is the Dart type they decode back to, so a `List<int>` may
+    return as a `Uint8List`
+  - A type is only changed when it saves bytes, so a positive `Int64List` is left as
+    `int64` rather than swapped for the same-width `uint64`, and `byte` is never re-chosen
 - Reject extension types (`E`) with an explicit `FormatException`; they are not implemented
 - Fix string length prefixes counting UTF-16 code units instead of UTF-8 bytes, which
   produced undecodable output for any non-ASCII string

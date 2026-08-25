@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'marker.dart';
+import 'packing.dart';
 
 /// How a list that is a uniform table of records is written.
 ///
@@ -349,7 +350,8 @@ final class BjdataSoaSchema {
   /// - `bool` fields become [BjdataSoaBooleanType]
   /// - `int` fields use the smallest integer marker covering their range,
   ///   favouring unsigned types
-  /// - `double` fields become `float64`
+  /// - `double` fields become the narrowest float type holding every value
+  ///   unchanged
   /// - `String` fields become a [BjdataSoaDictionaryType] when at most half the
   ///   values are distinct, and a [BjdataSoaOffsetType] otherwise
   /// - `BigInt` fields become a high-precision [BjdataSoaDictionaryType]
@@ -413,14 +415,16 @@ final class BjdataSoaSchema {
         if (value < min) min = value;
         if (value > max) max = value;
       }
-      return BjdataSoaValueType(_integerMarker(min, max));
+      return BjdataSoaValueType(bjdataIntegerMarker(min, max));
     }
 
     if (first is double) {
       for (final value in values) {
         if (value is! double) return null;
       }
-      return BjdataSoaValueType(BjdataMarker.float64);
+      // Narrowed only as far as every value survives unchanged. A column decodes
+      // to a double whatever width it was stored at, so this costs nothing.
+      return BjdataSoaValueType(bjdataFloatMarker(values.cast<double>()));
     }
 
     if (first is String) {
@@ -434,7 +438,7 @@ final class BjdataSoaSchema {
       if (distinct.length * 2 <= values.length) {
         return BjdataSoaDictionaryType(distinct.toList(growable: false));
       }
-      return BjdataSoaOffsetType(_integerMarker(0, bufferLength));
+      return BjdataSoaOffsetType(bjdataIntegerMarker(0, bufferLength));
     }
 
     if (first is BigInt) {
@@ -487,17 +491,6 @@ final class BjdataSoaSchema {
 
     return null;
   }
-
-  static BjdataMarker _integerMarker(int min, int max) => switch ((min, max)) {
-        (>= 0, <= 255) => BjdataMarker.uint8,
-        (>= -128, <= 127) => BjdataMarker.int8,
-        (>= 0, <= 65535) => BjdataMarker.uint16,
-        (>= -32768, <= 32767) => BjdataMarker.int16,
-        (>= 0, <= 4294967295) => BjdataMarker.uint32,
-        (>= -2147483648, <= 2147483647) => BjdataMarker.int32,
-        (>= 0, _) => BjdataMarker.uint64,
-        _ => BjdataMarker.int64,
-      };
 
   @override
   bool operator ==(Object other) =>
