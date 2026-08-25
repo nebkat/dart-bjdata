@@ -4,13 +4,19 @@ import 'dart:io';
 import 'package:bjdata/bjdata.dart';
 
 Future<void> main(List<String> arguments) async {
-  final command = arguments.isNotEmpty ? arguments[0] : null;
-  final inputPath = arguments.length > 1 ? arguments[1] : null;
-  final outputPath = arguments.length > 2 ? arguments[2] : null;
+  final soa = switch (arguments) {
+    _ when arguments.contains('--no-soa') => BjdataSoaLayout.off,
+    _ when arguments.contains('--column-major') => BjdataSoaLayout.columnMajor,
+    _ => BjdataSoaLayout.rowMajor,
+  };
+  final positional = arguments.where((a) => !a.startsWith('-')).toList();
+  final command = positional.isNotEmpty ? positional[0] : null;
+  final inputPath = positional.length > 1 ? positional[1] : null;
+  final outputPath = positional.length > 2 ? positional[2] : null;
 
   final _ = switch (command) {
-    'block' => await block(inputPath, outputPath),
-    'encode' => await encode(inputPath, outputPath),
+    'block' => await block(inputPath, outputPath, soa),
+    'encode' => await encode(inputPath, outputPath, soa),
     'decode' => await decode(inputPath, outputPath),
     _ => usage(arguments.contains('-h') || arguments.contains('--help')),
   };
@@ -41,10 +47,13 @@ void usage(bool requested) {
   final out = requested ? stdout : stderr;
   out.writeln("A command-line utility for BJData encoding and decoding.");
   out.writeln();
-  out.writeln('Usage: bjdata <block|encode|decode> [input] [output]');
+  out.writeln('Usage: bjdata <block|encode|decode> [input] [output] [--no-soa|--column-major]');
   out.writeln(
     '- Input and output are optional file paths\n'
-    '- If omitted, stdin/stdout are used',
+    '- If omitted, stdin/stdout are used\n'
+    '- Uniform tables of records are packed as row-major Structure-of-Arrays\n'
+    '  containers; --column-major packs them by field instead, and --no-soa\n'
+    '  writes plain arrays of objects',
   );
   out.writeln();
   out.writeln('Commands:');
@@ -55,17 +64,17 @@ void usage(bool requested) {
   if (!requested) exit(1);
 }
 
-Future<void> block(String? inputPath, String? outputPath) async {
+Future<void> block(String? inputPath, String? outputPath, BjdataSoaLayout soa) async {
   final input = await _readInput(inputPath);
   final data = json.decode(utf8.decode(input));
-  final block = bjdataBlockNotation(data, indent: '    ');
+  final block = bjdataBlockNotation(data, indent: '    ', soa: soa);
   await _writeOutput(outputPath, utf8.encode(block));
 }
 
-Future<void> encode(String? inputPath, String? outputPath) async {
+Future<void> encode(String? inputPath, String? outputPath, BjdataSoaLayout soa) async {
   final input = await _readInput(inputPath);
   final data = jsonDecode(utf8.decode(input));
-  final bjdata = bjdataEncode(data);
+  final bjdata = bjdataEncode(data, soa: soa);
   await _writeOutput(outputPath, bjdata);
 }
 

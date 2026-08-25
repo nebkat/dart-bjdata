@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import '../soa.dart';
 import 'sink.dart';
 
 /// Encoder that encodes a single object as a BJData buffer.
@@ -13,6 +14,9 @@ final class BjdataEncoder extends Converter<Object?, List<int>> {
 
   /// Output buffer size.
   final int _bufferSize;
+
+  /// How uniform tables of records are packed.
+  final BjdataSoaLayout _soa;
 
   /// Create converter.
   ///
@@ -28,11 +32,17 @@ final class BjdataEncoder extends Converter<Object?, List<int>> {
   ///
   /// If [toEncodable] is omitted, it defaults to calling `.toJson()` on the
   /// object.
+  ///
+  /// Any list that is a uniform table of records is detected and written as a
+  /// Structure-of-Arrays container instead of an array of objects. [soa] selects
+  /// the layout, or turns the packing off. See [BjdataEncoder.convert].
   BjdataEncoder([
     dynamic Function(dynamic object)? toEncodable,
     int? bufferSize,
+    BjdataSoaLayout soa = BjdataSoaLayout.rowMajor,
   ])  : _toEncodable = toEncodable,
-        _bufferSize = bufferSize ?? _defaultBufferSize;
+        _bufferSize = bufferSize ?? _defaultBufferSize,
+        _soa = soa;
 
   /// Converts [object] to a BJData [List<int>] buffer.
   ///
@@ -60,6 +70,17 @@ final class BjdataEncoder extends Converter<Object?, List<int>> {
   /// If an object is serialized more than once, [convert] may cache the text
   /// for it. In other words, if the content of an object changes after it is
   /// first serialized, the new values may not be reflected in the result.
+  ///
+  /// Unless this encoder was created with [BjdataSoaLayout.off], every [List] is
+  /// examined first: a list of two or more records that all share the same field
+  /// names and per-field types is written as a Structure-of-Arrays container
+  /// rather than an array of objects, and rectangular nested lists of such
+  /// records become an N-dimensional container. Lists that do not qualify are
+  /// written unchanged.
+  ///
+  /// [BjdataSoaLayout.rowMajor] decodes back to the list of records it was given.
+  /// [BjdataSoaLayout.columnMajor] writes an object of named arrays, which
+  /// decodes to a [Map] of columns instead.
   @override
   List<int> convert(Object? object) {
     BytesBuilder builder = BytesBuilder(copy: false);
@@ -68,6 +89,7 @@ final class BjdataEncoder extends Converter<Object?, List<int>> {
       _toEncodable,
       _bufferSize,
       (chunk) => builder.add(chunk),
+      soa: _soa,
     );
     return builder.takeBytes();
   }
@@ -86,7 +108,7 @@ final class BjdataEncoder extends Converter<Object?, List<int>> {
     } else {
       byteSink = ByteConversionSink.from(sink);
     }
-    return BjdataEncoderSink(byteSink, _toEncodable, _bufferSize);
+    return BjdataEncoderSink(byteSink, _toEncodable, _bufferSize, soa: _soa);
   }
 }
 
@@ -103,6 +125,9 @@ final class BjdataBlockNotationEncoder extends Converter<Object?, String> {
   /// Function called with each un-encodable object encountered.
   final Object? Function(dynamic)? _toEncodable;
 
+  /// How uniform tables of records are packed.
+  final BjdataSoaLayout _soa;
+
   /// Creates a BJData block notation converter.
   ///
   /// The BJData encoder handles numbers, strings, booleans, null, lists and maps
@@ -113,7 +138,10 @@ final class BjdataBlockNotationEncoder extends Converter<Object?, String> {
   ///
   /// If [toEncodable] is omitted, it defaults to calling `.toJson()` on the
   /// object.
-  const BjdataBlockNotationEncoder([this._toEncodable]) : indent = null;
+  ///
+  /// Uniform tables of records are rendered as Structure-of-Arrays containers,
+  /// in the layout selected by [soa].
+  const BjdataBlockNotationEncoder([this._toEncodable, this._soa = BjdataSoaLayout.rowMajor]) : indent = null;
 
   /// Creates a BJData block notation converter that creates multi-line output.
   ///
@@ -131,7 +159,14 @@ final class BjdataBlockNotationEncoder extends Converter<Object?, String> {
   ///
   /// If [toEncodable] is omitted, it defaults to calling `.toJson()` on the
   /// object.
-  const BjdataBlockNotationEncoder.withIndent(this.indent, [this._toEncodable]);
+  ///
+  /// Uniform tables of records are rendered as Structure-of-Arrays containers,
+  /// in the layout selected by [soa].
+  const BjdataBlockNotationEncoder.withIndent(
+    this.indent, [
+    this._toEncodable,
+    this._soa = BjdataSoaLayout.rowMajor,
+  ]);
 
   /// Converts [object] to a BJData block notation [String].
   ///
@@ -160,7 +195,7 @@ final class BjdataBlockNotationEncoder extends Converter<Object?, String> {
   /// for it. In other words, if the content of an object changes after it is
   /// first serialized, the new values may not be reflected in the result.
   @override
-  String convert(Object? object) => BjdataBlockNotationStringifier.stringify(object, _toEncodable, indent);
+  String convert(Object? object) => BjdataBlockNotationStringifier.stringify(object, _toEncodable, indent, soa: _soa);
 
   /// Starts a chunked conversion.
   ///
@@ -175,6 +210,7 @@ final class BjdataBlockNotationEncoder extends Converter<Object?, String> {
       sink is StringConversionSink ? sink : StringConversionSink.from(sink),
       _toEncodable,
       indent,
+      soa: _soa,
     );
   }
 }

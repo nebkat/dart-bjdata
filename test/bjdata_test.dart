@@ -1,8 +1,11 @@
+import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:bjdata/bjdata.dart';
+import 'package:bjdata/src/encoder/sink.dart';
 import 'package:bjdata/src/marker.dart';
+import 'package:bjdata/src/soa.dart';
 import 'package:test/test.dart';
 
 extension on List<int> {
@@ -580,6 +583,753 @@ void main() {
       for (final entry in entries) {
         expect(() => bjdataDecode([entry]), throwsA(isA<FormatException>()));
       }
+    });
+  });
+
+  group('soa', () {
+    /// A schema field name, encoded the way the specification examples write it.
+    List<int> name(String value) => [M.int8.i, value.length, ...utf8.encode(value)];
+    List<int> f64(double value) => Uint8List.sublistView(ByteData(8)..setFloat64(0, value, Endian.little));
+    List<int> u32(int value) => Uint8List.sublistView(ByteData(4)..setUint32(0, value, Endian.little));
+    List<int> i32(int value) => Uint8List.sublistView(ByteData(4)..setInt32(0, value, Endian.little));
+
+    /// Encodes an explicit schema, which auto-detection never produces on its
+    /// own, by driving the writer directly.
+    List<int> encodeSoa(BjdataSoaSchema schema, List<int> dimensions, List<Map<String, Object?>> records) {
+      final builder = BytesBuilder();
+      final writer = BjdataBufferWriter(null, 256, builder.add);
+      writer.writeSoa(BjdataSoaCandidate(schema, dimensions, records), BjdataSoaLayout.rowMajor);
+      writer.flush(refill: false);
+      return builder.takeBytes();
+    }
+
+    group('detection', () {
+      final table = [
+        {'a': 1, 'b': 'x'},
+        {'a': 2, 'b': 'y'},
+      ];
+
+      test('packs a uniform table by default', () {
+        final encoded = bjdataEncode(table);
+        expect(encoded.sublist(0, 3), [M.arrayOpen.i, M.strongType.i, M.objectOpen.i]);
+        expect(encoded.length, lessThan(bjdataEncode(table, soa: BjdataSoaLayout.off).length));
+        expect(bjdataDecode(encoded), table);
+      });
+
+      test('soa: BjdataSoaLayout.off writes a plain array of objects', () {
+        final encoded = bjdataEncode(table, soa: BjdataSoaLayout.off);
+        expect(encoded.sublist(0, 2), [M.arrayOpen.i, M.objectOpen.i]);
+        expect(bjdataDecode(encoded), table);
+      });
+
+      test('decoding never depends on the flag', () {
+        expect(bjdataDecode(bjdataEncode(table)), bjdataDecode(bjdataEncode(table, soa: BjdataSoaLayout.off)));
+      });
+
+      test('gives up on self-referential values instead of recursing', () {
+        final list = <Object?>[];
+        list.add(list);
+        expect(() => bjdataEncode(list), throwsA(isA<BjdataCyclicError>()));
+
+        final record = <String, Object?>{};
+        record['self'] = record;
+        expect(() => bjdataEncode([record, record]), throwsA(isA<BjdataCyclicError>()));
+
+        final nested = <String, Object?>{};
+        nested['a'] = [nested];
+        expect(() => bjdataEncode([nested, nested]), throwsA(isA<BjdataCyclicError>()));
+      });
+
+      test('falls back to a plain array when a table is not uniform', () {
+        final fallbacks = <String, List<Object?>>{
+          'null in some records': [
+            {'a': 1},
+            {'a': null},
+          ],
+          'int mixed with double': [
+            {'a': 1},
+            {'a': 2.5},
+          ],
+          'differing field names': [
+            {'a': 1},
+            {'b': 2},
+          ],
+          'differing field counts': [
+            {'a': 1, 'b': 2},
+            {'a': 3},
+          ],
+          'nested objects with differing keys': [
+            {
+              'a': {'x': 1},
+            },
+            {
+              'a': {'y': 1},
+            },
+          ],
+          'arrays of differing lengths': [
+            {
+              'a': [1],
+            },
+            {
+              'a': [1, 2],
+            },
+          ],
+          'empty arrays': [
+            {'a': <int>[]},
+            {'a': <int>[]},
+          ],
+          'typed data fields': [
+            {
+              'a': Uint8List.fromList([1, 2]),
+            },
+            {
+              'a': Uint8List.fromList([3, 4]),
+            },
+          ],
+          'a single record': [
+            {'a': 1},
+          ],
+          'no fields': [<String, Object?>{}, <String, Object?>{}],
+          'values that are not records': [1, 2, 3],
+          'ragged nesting': [
+            [
+              {'a': 1},
+            ],
+            [
+              {'a': 2},
+              {'a': 3},
+            ],
+          ],
+          'an empty list': <Object?>[],
+        };
+
+        fallbacks.forEach((reason, value) {
+          final encoded = bjdataEncode(value);
+          expect(encoded[1], isNot(M.strongType.i), reason: reason);
+          expect(bjdataDecode(encoded), value, reason: reason);
+        });
+      });
+
+      test('does not make non-string keys encodable', () {
+        final value = [
+          {1: 'a'},
+          {1: 'b'},
+        ];
+        expect(() => bjdataEncode(value), throwsA(isA<BjdataUnsupportedObjectError>()));
+        expect(() => bjdataEncode(value), throwsA(isA<BjdataUnsupportedObjectError>()));
+      });
+
+      test('packs a table nested inside an object', () {
+        final envelope = {
+          'users': [
+            {'id': 1},
+            {'id': 2},
+          ],
+          'total': 2,
+        };
+        final encoded = bjdataEncode(envelope);
+        expect(encoded.first, M.objectOpen.i);
+        expect(bjdataDecode(encoded), envelope);
+      });
+    });
+
+    group('layout', () {
+      final records = <Map<String, Object?>>[
+        {'id': 1, 'name': 'Alice', 'ok': true},
+        {'id': 2, 'name': 'Bob', 'ok': false},
+        {'id': 3, 'name': 'Charlie', 'ok': true},
+      ];
+
+      test('row-major is the default', () {
+        expect(bjdataEncode(records).hex, bjdataEncode(records, soa: BjdataSoaLayout.rowMajor).hex);
+      });
+
+      test('row-major opens with an array marker', () {
+        final encoded = bjdataEncode(records, soa: BjdataSoaLayout.rowMajor);
+        expect(encoded.sublist(0, 3), [M.arrayOpen.i, M.strongType.i, M.objectOpen.i]);
+        expect(bjdataDecode(encoded), records);
+      });
+
+      test('column-major opens with an object marker', () {
+        final encoded = bjdataEncode(records, soa: BjdataSoaLayout.columnMajor);
+        expect(encoded.sublist(0, 3), [M.objectOpen.i, M.strongType.i, M.objectOpen.i]);
+      });
+
+      test('column-major decodes to a map of columns', () {
+        expect(bjdataDecode(bjdataEncode(records, soa: BjdataSoaLayout.columnMajor)), {
+          'id': [1, 2, 3],
+          'name': ['Alice', 'Bob', 'Charlie'],
+          'ok': [true, false, true],
+        });
+      });
+
+      test('both layouts share a schema and a payload size', () {
+        final rows = bjdataEncode(records, soa: BjdataSoaLayout.rowMajor);
+        final columns = bjdataEncode(records, soa: BjdataSoaLayout.columnMajor);
+        expect(columns.length, rows.length);
+        // Identical but for the container marker and the order of the payload.
+        expect(columns.sublist(1, 20), rows.sublist(1, 20));
+        expect(columns.hex, isNot(rows.hex));
+      });
+
+      test('column-major groups each field together', () {
+        final table = <Map<String, Object?>>[
+          {'a': 1, 'b': 2},
+          {'a': 3, 'b': 4},
+        ];
+        List<int> payloadOf(BjdataSoaLayout layout) {
+          final encoded = bjdataEncode(table, soa: layout);
+          return encoded.sublist(encoded.length - 4);
+        }
+
+        expect(payloadOf(BjdataSoaLayout.rowMajor), [1, 2, 3, 4]); // a b, a b
+        expect(payloadOf(BjdataSoaLayout.columnMajor), [1, 3, 2, 4]); // a a, b b
+      });
+
+      test('offset tables follow the payload in both layouts', () {
+        final table = <Map<String, Object?>>[
+          {'s': 'a', 't': 'xx'},
+          {'s': 'bb', 't': 'y'},
+          {'s': 'ccc', 't': 'zzz'},
+        ];
+        for (final layout in [BjdataSoaLayout.rowMajor, BjdataSoaLayout.columnMajor]) {
+          final encoded = bjdataEncode(table, soa: layout);
+          final decoded = bjdataDecode(encoded);
+          final expected = layout == BjdataSoaLayout.rowMajor
+              ? table
+              : {
+                  's': ['a', 'bb', 'ccc'],
+                  't': ['xx', 'y', 'zzz'],
+                };
+          expect(decoded, expected, reason: '$layout');
+        }
+      });
+
+      test('n-dimensional works in both layouts', () {
+        final grid = [
+          for (var r = 0; r < 2; r++)
+            [
+              for (var c = 0; c < 3; c++) <String, Object?>{'x': r * 3 + c}
+            ],
+        ];
+        expect(bjdataDecode(bjdataEncode(grid, soa: BjdataSoaLayout.rowMajor)), grid);
+        expect(bjdataDecode(bjdataEncode(grid, soa: BjdataSoaLayout.columnMajor)), {
+          'x': [
+            [0, 1, 2],
+            [3, 4, 5],
+          ],
+        });
+      });
+
+      test('off writes plain arrays of objects', () {
+        final encoded = bjdataEncode(records, soa: BjdataSoaLayout.off);
+        expect(encoded.sublist(0, 2), [M.arrayOpen.i, M.objectOpen.i]);
+        expect(bjdataDecode(encoded), records);
+      });
+
+      test('block notation renders both layouts', () {
+        final table = [
+          {'a': 1},
+          {'a': 2},
+        ];
+        expect(bjdataBlockNotation(table, soa: BjdataSoaLayout.rowMajor), '[[][\$][{][U][1][a][U][}][#][U][2][1][2]');
+        expect(
+          bjdataBlockNotation(table, soa: BjdataSoaLayout.columnMajor),
+          '[{][\$][{][U][1][a][U][}][#][U][2][1][2]',
+        );
+      });
+    });
+
+    group('round trip', () {
+      void roundTrip(String reason, List<Object?> value) {
+        test(reason, () {
+          final encoded = bjdataEncode(value);
+          expect(encoded.sublist(0, 3), [M.arrayOpen.i, M.strongType.i, M.objectOpen.i], reason: reason);
+          expect(bjdataDecode(encoded), value, reason: reason);
+        });
+      }
+
+      roundTrip('integer columns', [
+        {'u8': 255, 'i8': -1, 'u16': 65535, 'i16': -300, 'u32': 4294967295, 'i32': -70000},
+        {'u8': 0, 'i8': -128, 'u16': 0, 'i16': 300, 'u32': 0, 'i32': 70000},
+      ]);
+      roundTrip('double columns', [
+        {'d': 1.5},
+        {'d': -2.25},
+        {'d': 1e300},
+      ]);
+      roundTrip('boolean and null columns', [
+        {'b': true, 'z': null},
+        {'b': false, 'z': null},
+      ]);
+      roundTrip('dictionary strings', [
+        {'s': 'a'},
+        {'s': 'b'},
+        {'s': 'a'},
+        {'s': 'b'},
+      ]);
+      roundTrip('offset table strings', [
+        {'s': 'a'},
+        {'s': 'bb'},
+        {'s': 'ccc'},
+      ]);
+      roundTrip('empty strings', [
+        {'s': ''},
+        {'s': 'a'},
+        {'s': ''},
+      ]);
+      roundTrip('non-ascii strings', [
+        {'s': 'héllo'},
+        {'s': 'wörld ✓'},
+        {'s': '✓'},
+      ]);
+      roundTrip('high-precision columns', [
+        {'h': BigInt.parse('123456789012345678901234567890')},
+        {'h': BigInt.from(-42)},
+        {'h': BigInt.parse('123456789012345678901234567890')},
+      ]);
+      roundTrip('nested objects', [
+        {
+          'p': {'x': 1.5, 'y': 2.5},
+        },
+        {
+          'p': {'x': 3.5, 'y': 4.5},
+        },
+      ]);
+      roundTrip('fixed arrays', [
+        {
+          'v': [1, 2, 3],
+        },
+        {
+          'v': [4, 5, 6],
+        },
+      ]);
+      roundTrip('deeply nested fields', [
+        {
+          'a': {
+            'b': [
+              {'c': 'x'},
+              {'c': 'y'},
+            ],
+          },
+        },
+        {
+          'a': {
+            'b': [
+              {'c': 'z'},
+              {'c': 'x'},
+            ],
+          },
+        },
+      ]);
+    });
+
+    group('n-dimensional', () {
+      final grid = [
+        for (var r = 0; r < 4; r++)
+          [
+            for (var c = 0; c < 3; c++) <String, Object?>{'x': r * 3 + c}
+          ],
+      ];
+
+      test('nested lists become a dimension array', () {
+        expect(bjdataEncode(grid).hex, '5b247b550178557d235b550455035d000102030405060708090a0b');
+      });
+
+      test('decodes back to the same nesting', () {
+        expect(bjdataDecode(bjdataEncode(grid)), grid);
+      });
+
+      test('handles three dimensions', () {
+        final cube = [
+          for (var i = 0; i < 2; i++)
+            [
+              for (var j = 0; j < 2; j++)
+                [
+                  for (var k = 0; k < 2; k++) <String, Object?>{'v': i * 4 + j * 2 + k}
+                ],
+            ],
+        ];
+        expect(bjdataDecode(bjdataEncode(cube)), cube);
+      });
+
+      test('accepts an optimized dimension array', () {
+        final encoded = [
+          M.arrayOpen.i, M.strongType.i, M.objectOpen.i, //
+          M.uint8.i, 1, 0x78, M.uint8.i,
+          M.objectClose.i,
+          M.count.i, M.arrayOpen.i, M.strongType.i, M.uint8.i, M.count.i, M.uint8.i, 2, 4, 3,
+          for (var i = 0; i < 12; i++) i,
+        ];
+        expect(bjdataDecode(encoded), grid);
+      });
+    });
+
+    group('specification examples', () {
+      test('decodes example 1, fixed-length fields only', () {
+        final encoded = [
+          M.arrayOpen.i, M.strongType.i, M.objectOpen.i, //
+          ...name('id'), M.uint32.i,
+          ...name('pos'), M.objectOpen.i, ...name('x'), M.float64.i, ...name('y'), M.float64.i, M.objectClose.i,
+          ...name('val'), M.arrayOpen.i, M.float64.i, M.float64.i, M.float64.i, M.arrayClose.i,
+          ...name('on'), M.true_.i,
+          M.objectClose.i,
+          M.count.i, M.int8.i, 2,
+          ...u32(1), ...f64(1.0), ...f64(2.0), ...f64(0.1), ...f64(0.2), ...f64(0.3), M.true_.i,
+          ...u32(2), ...f64(3.0), ...f64(4.0), ...f64(0.4), ...f64(0.5), ...f64(0.6), M.false_.i,
+        ];
+        // A 42 byte header and two 45 byte records, per the specification example.
+        expect(encoded.length, 132);
+        expect(bjdataDecode(encoded), [
+          {
+            'id': 1,
+            'pos': {'x': 1.0, 'y': 2.0},
+            'val': [0.1, 0.2, 0.3],
+            'on': true,
+          },
+          {
+            'id': 2,
+            'pos': {'x': 3.0, 'y': 4.0},
+            'val': [0.4, 0.5, 0.6],
+            'on': false,
+          },
+        ]);
+      });
+
+      test('decodes example 2, variable-length string fields', () {
+        final encoded = [
+          M.arrayOpen.i, M.strongType.i, M.objectOpen.i, //
+          ...name('id'), M.uint32.i,
+          ...name('status'), M.arrayOpen.i, M.strongType.i, M.string.i, M.count.i, M.int8.i, 3,
+          ...name('active'), ...name('inactive'), ...name('pending'),
+          ...name('name'), M.arrayOpen.i, M.strongType.i, M.int32.i, M.arrayClose.i,
+          ...name('code'), M.string.i, M.int8.i, 4,
+          M.objectClose.i,
+          M.count.i, M.int8.i, 3,
+          // 13 byte records: id, status index, name index, fixed code.
+          ...u32(1), 0, ...i32(0), ...utf8.encode('U001'),
+          ...u32(2), 2, ...i32(1), ...utf8.encode('U002'),
+          ...u32(3), 0, ...i32(2), ...utf8.encode('U003'),
+          ...i32(0), ...i32(5), ...i32(8), ...i32(32),
+          ...utf8.encode('AliceBobDr. Christopher Williams'),
+        ];
+        // 3 records of 13 bytes, a 4 entry int32 offset table and a 32 byte buffer.
+        expect(encoded.length - (3 * 13 + 16 + 32), 72);
+        expect(bjdataDecode(encoded), [
+          {'id': 1, 'status': 'active', 'name': 'Alice', 'code': 'U001'},
+          {'id': 2, 'status': 'pending', 'name': 'Bob', 'code': 'U002'},
+          {'id': 3, 'status': 'active', 'name': 'Dr. Christopher Williams', 'code': 'U003'},
+        ]);
+      });
+    });
+
+    group('explicit schema', () {
+      // Auto-detection never chooses these, so they are exercised through the
+      // writer directly to keep the encoder and decoder in step.
+      test('char, byte and null fields', () {
+        final schema = BjdataSoaSchema({
+          'c': BjdataSoaValueType(M.char),
+          'b': BjdataSoaValueType(M.byte),
+          'z': const BjdataSoaNullType(),
+        });
+        final records = <Map<String, Object?>>[
+          {'c': 'a', 'b': 255, 'z': null},
+          {'c': ';', 'b': 0, 'z': null},
+        ];
+        final encoded = encodeSoa(schema, [2], records);
+        expect(schema.recordByteLength, 2);
+        expect(encoded.sublist(encoded.length - 4).hex, '61ff3b00');
+        expect(bjdataDecode(encoded), records);
+      });
+
+      test('float16 round-trips representable values', () {
+        final values = [
+          0.0,
+          -0.0,
+          1.0,
+          -1.0,
+          0.5,
+          65504.0, // largest finite float16
+          6.103515625e-5, // smallest normal float16
+          5.960464477539063e-8, // smallest subnormal float16
+          double.infinity,
+          double.negativeInfinity,
+        ];
+        final schema = BjdataSoaSchema({'v': BjdataSoaValueType(M.float16)});
+        final records = [
+          for (final v in values) <String, Object?>{'v': v},
+        ];
+        final decoded = bjdataDecode(encodeSoa(schema, [values.length], records));
+        for (var i = 0; i < values.length; i++) {
+          expect(decoded[i]['v'], values[i], reason: 'float16 $i');
+          expect((decoded[i]['v'] as double).isNegative, values[i].isNegative, reason: 'float16 sign $i');
+        }
+      });
+
+      test('float16 rounds to nearest even', () {
+        final schema = BjdataSoaSchema({'v': BjdataSoaValueType(M.float16)});
+        final decoded = bjdataDecode(
+          encodeSoa(schema, [
+            4
+          ], [
+            {'v': 1 / 3},
+            {'v': 1e-9},
+            {'v': 1e9},
+            {'v': double.nan},
+          ]),
+        );
+        expect(decoded[0]['v'], 0.333251953125);
+        expect(decoded[1]['v'], 0.0);
+        expect(decoded[2]['v'], double.infinity);
+        expect((decoded[3]['v'] as double).isNaN, isTrue);
+      });
+
+      test('float32 payloads', () {
+        final schema = BjdataSoaSchema({'v': BjdataSoaValueType(M.float32)});
+        final encoded = encodeSoa(schema, [
+          2
+        ], [
+          {'v': 1.0},
+          {'v': -2.5},
+        ]);
+        expect(encoded.sublist(encoded.length - 8).hex, '0000803f000020c0');
+        expect(bjdataDecode(encoded), [
+          {'v': 1.0},
+          {'v': -2.5},
+        ]);
+      });
+
+      test('pads and strips fixed-length strings', () {
+        final schema = BjdataSoaSchema({'s': BjdataSoaFixedStringType(4)});
+        final encoded = encodeSoa(schema, [
+          2
+        ], [
+          {'s': 'ab'},
+          {'s': ''},
+        ]);
+        expect(encoded.sublist(encoded.length - 8).hex, '6162000000000000');
+        expect(bjdataDecode(encoded), [
+          {'s': 'ab'},
+          {'s': ''},
+        ]);
+      });
+
+      test('fixed-length and dictionary high-precision fields', () {
+        final huge = BigInt.parse('123456789012345678901234567890');
+        final schema = BjdataSoaSchema({
+          'd': BjdataSoaDictionaryType([BigInt.one, BigInt.two], huge: true),
+          'f': BjdataSoaFixedStringType(31, huge: true),
+        });
+        final records = <Map<String, Object?>>[
+          {'d': BigInt.one, 'f': huge},
+          {'d': BigInt.two, 'f': -huge},
+          {'d': BigInt.one, 'f': BigInt.zero},
+        ];
+        expect(bjdataDecode(encodeSoa(schema, [3], records)), records);
+      });
+
+      test('rejects values the schema cannot hold', () {
+        final cases = <String, (BjdataSoaSchema, Object?)>{
+          'a string in a numeric field': (
+            BjdataSoaSchema({'a': BjdataSoaValueType(M.uint8)}),
+            'x',
+          ),
+          'a missing field': (BjdataSoaSchema({'a': BjdataSoaValueType(M.uint8)}), null),
+          'a string too long to fit': (BjdataSoaSchema({'a': BjdataSoaFixedStringType(2)}), 'toolong'),
+          'a multi-character char': (BjdataSoaSchema({'a': BjdataSoaValueType(M.char)}), 'ab'),
+          'a non-ascii char': (BjdataSoaSchema({'a': BjdataSoaValueType(M.char)}), 'é'),
+          'a value not in the dictionary': (
+            BjdataSoaSchema({
+              'a': BjdataSoaDictionaryType(const ['x'])
+            }),
+            'y',
+          ),
+          'the wrong array length': (
+            BjdataSoaSchema({
+              'a': BjdataSoaArrayType([BjdataSoaValueType(M.uint8)]),
+            }),
+            [1, 2],
+          ),
+        };
+        cases.forEach((reason, testCase) {
+          final (schema, value) = testCase;
+          expect(
+            () => encodeSoa(schema, [
+              1
+            ], [
+              if (value != null) {'a': value} else <String, Object?>{},
+            ]),
+            throwsA(isA<ArgumentError>()),
+            reason: reason,
+          );
+        });
+      });
+    });
+
+    group('schema', () {
+      test('reports record byte lengths', () {
+        expect(
+          BjdataSoaSchema({
+            'id': BjdataSoaValueType(M.uint32),
+            'pos': BjdataSoaObjectType({
+              'x': BjdataSoaValueType(M.float64),
+              'y': BjdataSoaValueType(M.float64),
+            }),
+            'val': BjdataSoaArrayType([for (var i = 0; i < 3; i++) BjdataSoaValueType(M.float64)]),
+            'on': const BjdataSoaBooleanType(),
+          }).recordByteLength,
+          45,
+        );
+      });
+
+      test('keys offset fields by payload path', () {
+        final schema = BjdataSoaSchema({
+          'a': BjdataSoaOffsetType(M.uint8),
+          'b': BjdataSoaObjectType({'c': BjdataSoaOffsetType(M.uint8)}),
+          'd': BjdataSoaArrayType([BjdataSoaValueType(M.uint8), BjdataSoaOffsetType(M.uint8)]),
+          'e': BjdataSoaValueType(M.uint8),
+        });
+        expect(schema.offsetFields.keys, ['a', 'b.c', 'd[1]']);
+      });
+
+      test('rejects invalid field types', () {
+        expect(() => BjdataSoaValueType(M.string), throwsA(isA<ArgumentError>()));
+        expect(() => BjdataSoaValueType(M.arrayOpen), throwsA(isA<ArgumentError>()));
+        expect(() => BjdataSoaOffsetType(M.float64), throwsA(isA<ArgumentError>()));
+        expect(() => BjdataSoaDictionaryType([]), throwsA(isA<ArgumentError>()));
+        expect(() => BjdataSoaObjectType({}), throwsA(isA<ArgumentError>()));
+        expect(() => BjdataSoaArrayType([]), throwsA(isA<ArgumentError>()));
+      });
+
+      test('sizes dictionary indices by dictionary size', () {
+        expect(BjdataSoaDictionaryType(List.filled(255, 'a')).indexMarker, M.uint8);
+        expect(BjdataSoaDictionaryType(List.filled(256, 'a')).indexMarker, M.uint16);
+      });
+
+      test('infers the narrowest integer marker', () {
+        BjdataMarker markerFor(List<int> values) {
+          final schema = BjdataSoaSchema.tryInfer([
+            for (final v in values) {'a': v},
+          ])!;
+          return (schema.fields['a'] as BjdataSoaValueType).marker;
+        }
+
+        expect(markerFor([0, 255]), M.uint8);
+        expect(markerFor([-1, 127]), M.int8);
+        expect(markerFor([0, 65535]), M.uint16);
+        expect(markerFor([-1, 300]), M.int16);
+        expect(markerFor([0, 4294967295]), M.uint32);
+        expect(markerFor([-1, 70000]), M.int32);
+      });
+
+      test('chooses dictionary or offset storage by repetition', () {
+        BjdataSoaType typeFor(List<String> values) => BjdataSoaSchema.tryInfer([
+              for (final v in values) {'a': v},
+            ])!
+                .fields['a']!;
+
+        expect(typeFor(['a', 'b', 'a', 'b']), isA<BjdataSoaDictionaryType>());
+        expect(typeFor(['a', 'bb', 'ccc']), isA<BjdataSoaOffsetType>());
+      });
+
+      test('never chooses lossy fixed-length strings', () {
+        final schema = BjdataSoaSchema.tryInfer([
+          {'a': 'x '},
+          {'a': 'y'},
+        ])!;
+        expect(schema.fields['a'], isNot(isA<BjdataSoaFixedStringType>()));
+      });
+    });
+
+    group('block notation', () {
+      test('renders the schema and payload', () {
+        expect(
+          bjdataBlockNotation([
+            {'id': 1, 'name': 'Alice', 'ok': true},
+            {'id': 2, 'name': 'Bob', 'ok': false},
+          ], indent: '  '),
+          '[[][\$][{]\n'
+          '  [U][2][id][U]\n'
+          '  [U][4][name][[][\$][U][]]\n'
+          '  [U][2][ok][T]\n'
+          '[}][#][U][2]\n'
+          '  [1][0][T]\n'
+          '  [2][1][F]\n'
+          '  [0][5][8]\n'
+          '  [Alice][Bob]\n',
+        );
+      });
+
+      test('soa: BjdataSoaLayout.off renders a plain array of objects', () {
+        expect(
+          bjdataBlockNotation([
+            {'a': 1},
+            {'a': 2},
+          ], soa: BjdataSoaLayout.off),
+          '[[][{][U][1][a][U][1][}][{][U][1][a][U][2][}][]]',
+        );
+      });
+    });
+
+    group('invalid', () {
+      test('decoding rejects malformed containers', () {
+        final entries = <String, List<int>>{
+          'empty schema': [M.arrayOpen.i, M.strongType.i, M.objectOpen.i, M.objectClose.i, M.count.i, M.uint8.i, 0],
+          'schema not followed by a count': [
+            M.arrayOpen.i, M.strongType.i, M.objectOpen.i, M.uint8.i, 1, 0x61, M.uint8.i, M.objectClose.i, //
+            M.uint8.i, 0,
+          ],
+          'invalid schema type marker': [
+            M.arrayOpen.i, M.strongType.i, M.objectOpen.i, M.uint8.i, 1, 0x61, M.noop.i, M.objectClose.i, //
+            M.count.i, M.uint8.i, 0,
+          ],
+          'truncated payload': [
+            M.arrayOpen.i, M.strongType.i, M.objectOpen.i, M.uint8.i, 1, 0x61, M.uint8.i, M.objectClose.i, //
+            M.count.i, M.uint8.i, 2, 1,
+          ],
+          'dictionary index out of range': [
+            M.arrayOpen.i, M.strongType.i, M.objectOpen.i, M.uint8.i, 1, 0x61, //
+            M.arrayOpen.i, M.strongType.i, M.string.i, M.count.i, M.uint8.i, 1, M.uint8.i, 1, 0x78, //
+            M.objectClose.i, M.count.i, M.uint8.i, 1, 5,
+          ],
+          'invalid boolean payload byte': [
+            M.arrayOpen.i, M.strongType.i, M.objectOpen.i, M.uint8.i, 1, 0x61, M.true_.i, M.objectClose.i, //
+            M.count.i, M.uint8.i, 1, 0x00,
+          ],
+          'offset table type is not an integer': [
+            M.arrayOpen.i, M.strongType.i, M.objectOpen.i, M.uint8.i, 1, 0x61, //
+            M.arrayOpen.i, M.strongType.i, M.float64.i, M.arrayClose.i, M.objectClose.i, M.count.i, M.uint8.i, 0,
+          ],
+          'duplicate schema field': [
+            M.arrayOpen.i, M.strongType.i, M.objectOpen.i, //
+            M.uint8.i, 1, 0x61, M.uint8.i, M.uint8.i, 1, 0x61, M.uint8.i, M.objectClose.i, //
+            M.count.i, M.uint8.i, 0,
+          ],
+          'negative dimension': [
+            M.arrayOpen.i, M.strongType.i, M.objectOpen.i, M.uint8.i, 1, 0x61, M.uint8.i, M.objectClose.i, //
+            M.count.i, M.arrayOpen.i, M.int8.i, 0xFF, M.arrayClose.i,
+          ],
+        };
+        entries.forEach((reason, entry) {
+          expect(() => bjdataDecode(entry), throwsA(isA<FormatException>()), reason: reason);
+        });
+      });
+    });
+
+    test('extension types are reported as unsupported', () {
+      expect(
+        () => bjdataDecode([0x45, 0x01, M.uint8.i, 0]),
+        throwsA(isA<FormatException>().having((e) => e.message, 'message', contains('extension'))),
+      );
+    });
+  });
+
+  group('utf-8 strings', () {
+    test('length prefixes count bytes, not code units', () {
+      // 'é' is two UTF-8 bytes but one UTF-16 code unit.
+      expect(bjdataEncode('héllo').hex, '53550668c3a96c6c6f');
+      expect(bjdataDecode(bjdataEncode('héllo')), 'héllo');
+      expect(bjdataDecode(bjdataEncode({'kéy': 'vålue ✓'})), {'kéy': 'vålue ✓'});
     });
   });
 }
