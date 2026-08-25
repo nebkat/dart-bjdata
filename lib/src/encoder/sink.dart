@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import '../error.dart';
 import '../marker.dart';
 import '../nd.dart';
+import '../packing.dart';
 import '../config.dart';
 import '../soa.dart';
 
@@ -183,11 +184,16 @@ abstract class _BjdataWriter<T> {
         final layout = _config.effectiveSoa;
         final soa =
             layout == BjdataSoaLayout.off ? null : tryBjdataSoaCandidate(l, multiDimensional: _config.multiDimensional);
-        final nd = soa == null && _config.multiDimensional ? tryBjdataNdCandidate(l) : null;
+        final nd = soa == null && _config.multiDimensional
+            ? tryBjdataNdCandidate(l, compactTypes: _config.compactTypes)
+            : null;
+        final packing = soa == null && nd == null && _config.compactTypes ? tryBjdataNumericPacking(l) : null;
         if (soa != null) {
           writeSoa(soa, layout);
         } else if (nd != null) {
           writeNdArray(nd);
+        } else if (packing != null) {
+          writeNumericArray(packing.marker, packing.values);
         } else {
           writeList(l);
         }
@@ -243,9 +249,13 @@ abstract class _BjdataWriter<T> {
   }
 
   /// Serialize a [double]
+  ///
+  /// Narrows to the smallest float type that holds [number] unchanged when the
+  /// configuration allows it. The decoded value is a [double] either way.
   void writeDouble(double number) {
-    writeMarker(BjdataMarker.float64);
-    writeDoubleWithoutMarker(number);
+    final marker = _config.compactTypes ? bjdataFloatMarker([number]) : BjdataMarker.float64;
+    writeMarker(marker);
+    writeFloatWithoutMarker(marker, number);
   }
 
   /// Serialize a [double] as a `float64` without a type marker.
@@ -277,7 +287,33 @@ abstract class _BjdataWriter<T> {
   }
 
   /// Serialize a [TypedData] buffer
+  ///
+  /// A buffer whose values would all fit a narrower type is written as that
+  /// type, when the configuration allows it.
+  ///
+  /// It stays a strongly-typed array either way. Passing typed data is itself a
+  /// request for one, and a generic array only beats it on a handful of elements
+  /// or a very uneven spread, which is not worth discarding what the caller
+  /// asked for. Pass a plain [List] to have both forms measured instead.
+  ///
+  /// [ByteData] is left alone: `byte` is already the narrowest width, and the
+  /// specification gives it a meaning of its own.
   void writeTypedData(TypedData buffer) {
+    if (_config.compactTypes && buffer is! ByteData) {
+      // An empty buffer says nothing about what would fit.
+      final values = _typedDataValues(buffer);
+      if (values != null && values.isNotEmpty) {
+        final marker = _narrowestMarker(values);
+        final current = bjdataTypedDataMarker(buffer);
+        // Only when it is actually narrower. A positive int64 fits uint64 just
+        // as well, and swapping one for the other would change the type for
+        // nothing.
+        if (marker != null && current != null && marker.fixedByteLength! < current.fixedByteLength!) {
+          return writeNumericArray(marker, values);
+        }
+      }
+    }
+
     final lengthInBytes = buffer.lengthInBytes;
     final elementSize = buffer.elementSizeInBytes;
     final elementCount = lengthInBytes ~/ elementSize;
@@ -337,6 +373,53 @@ abstract class _BjdataWriter<T> {
     }
   }
 
+  /// The narrowest strong type holding every value in [values] unchanged.
+  static BjdataMarker? _narrowestMarker(List<Object?> values) {
+    if (values.every((v) => v is int)) {
+      var min = values.first as int;
+      var max = min;
+      for (final value in values.cast<int>()) {
+        if (value < min) min = value;
+        if (value > max) max = value;
+      }
+      return bjdataIntegerMarker(min, max);
+    }
+    if (values.every((v) => v is double)) return bjdataFloatMarker(values.cast<double>());
+    return null;
+  }
+
+  /// The elements of [buffer] as a list, or null if they cannot be examined.
+  static List<Object?>? _typedDataValues(TypedData buffer) => switch (buffer) {
+        Int8List() ||
+        Uint8List() ||
+        Int16List() ||
+        Uint16List() ||
+        Int32List() ||
+        Uint32List() ||
+        Int64List() ||
+        Uint64List() ||
+        Float32List() ||
+        Float64List() =>
+          (buffer as List<num>).toList(growable: false),
+        _ => null,
+      };
+
+  /// Serialize a list of numbers as a strongly-typed array of [marker].
+  void writeNumericArray(BjdataMarker marker, List<Object?> values) {
+    writeMarker(BjdataMarker.arrayOpen);
+    writeMarker(BjdataMarker.strongType);
+    writeMarker(marker);
+    writeMarker(BjdataMarker.count);
+    writeInt(values.length);
+    for (final value in values) {
+      if (marker.isFloatType) {
+        writeFloatWithoutMarker(marker, (value as num).toDouble());
+      } else {
+        writeIntWithoutMarker(marker, value as int);
+      }
+    }
+  }
+
   /// Serialize a [TypedData] buffer
   void writeTypedDataContents(TypedData buffer);
 
@@ -356,8 +439,21 @@ abstract class _BjdataWriter<T> {
     }
     writeMarker(BjdataMarker.arrayClose);
 
+    // Rows are copied wholesale unless they are being narrowed, in which case
+    // each value is converted on the way out.
+    final native = nd.marker == bjdataTypedDataMarker(nd.rows.first);
     for (final row in nd.rows) {
-      writeTypedDataContents(row);
+      if (native) {
+        writeTypedDataContents(row);
+      } else {
+        for (final value in row as List<num>) {
+          if (nd.marker.isFloatType) {
+            writeFloatWithoutMarker(nd.marker, value.toDouble());
+          } else {
+            writeIntWithoutMarker(nd.marker, value as int);
+          }
+        }
+      }
     }
   }
 
@@ -503,20 +599,18 @@ abstract class _BjdataWriter<T> {
           if (value is! String) throw _soaTypeError(name, value, 'a String');
           writeFixedStringContents(value, byteLength);
         }
-      case BjdataSoaDictionaryType(:final values, :final huge, :final indexMarker):
+      case BjdataSoaDictionaryType(:final indices, :final huge, :final indexMarker):
         if (huge ? value is! BigInt : value is! String) {
           throw _soaTypeError(name, value, huge ? 'a BigInt' : 'a String');
         }
-        final index = values.indexOf(value!);
-        if (index < 0) {
+        final index = indices[value!];
+        if (index == null) {
           throw ArgumentError.value(value, name, 'Not present in the schema dictionary');
         }
         writeIntWithoutMarker(indexMarker, index);
       case BjdataSoaOffsetType(:final offsetMarker):
         if (value is! String) throw _soaTypeError(name, value, 'a String');
-        final writer = offsets[path]!;
-        writeIntWithoutMarker(offsetMarker, writer.values.length);
-        writer.values.add(value);
+        writeIntWithoutMarker(offsetMarker, offsets[path]!.slotOf(value));
       case BjdataSoaObjectType(:final fields):
         if (value is! Map) throw _soaTypeError(name, value, 'a Map');
         for (final field in fields.entries) {
@@ -582,6 +676,11 @@ abstract class _BjdataWriter<T> {
       writeIntWithoutMarker(marker, offset);
       for (final bytes in encoded) {
         offset += bytes.length;
+        writeIntWithoutMarker(marker, offset);
+      }
+      // The table holds one entry per record plus one, so the slots left over
+      // by repeated values are empty runs at the end of the buffer.
+      for (var slot = writer.values.length; slot < writer.records; slot++) {
         writeIntWithoutMarker(marker, offset);
       }
       newLine();
@@ -697,7 +796,8 @@ class BjdataBufferWriter extends _BjdataWriter {
   @override
   void writeFloatWithoutMarker(BjdataMarker marker, double number) {
     writeBytes(switch (marker) {
-      BjdataMarker.float16 => (ByteData(2)..setUint16(0, float16Bits(number), Endian.little)).buffer.asUint8List(),
+      BjdataMarker.float16 =>
+        (ByteData(2)..setUint16(0, bjdataFloat16Bits(number), Endian.little)).buffer.asUint8List(),
       BjdataMarker.float32 => (ByteData(4)..setFloat32(0, number, Endian.little)).buffer.asUint8List(),
       BjdataMarker.float64 => (ByteData(8)..setFloat64(0, number, Endian.little)).buffer.asUint8List(),
       _ => throw ArgumentError.value(marker, 'marker', 'Not a valid float marker'),
@@ -871,42 +971,31 @@ class BjdataBlockNotationStringifier extends _BjdataWriter {
 
 /// Collects the strings of one offset-table backed SoA field while the fixed
 /// payload is being written.
+///
+/// Equal values share a slot, so the buffer holds each distinct string once. The
+/// specification indexes the offset table by the value stored in each record, so
+/// nothing requires a record's slot to be its own position.
 class _SoaOffsetWriter {
   _SoaOffsetWriter(this.type);
 
   final BjdataSoaOffsetType type;
+
+  /// The distinct values, in the order they are written to the buffer.
   final List<String> values = [];
-}
 
-/// The IEEE 754 half-precision bit pattern of [value], rounded to nearest even.
-int float16Bits(double value) {
-  final data = ByteData(4)..setFloat32(0, value, Endian.little);
-  var bits = data.getUint32(0, Endian.little);
-  final sign = (bits & 0x80000000) >> 16;
-  bits &= 0x7FFFFFFF;
+  /// The slot each distinct value occupies.
+  final Map<String, int> _slots = {};
 
-  // Inf, NaN or a magnitude too large for float16.
-  if (bits >= 0x47800000) return sign | (bits > 0x7F800000 ? 0x7E00 : 0x7C00);
+  /// How many records have been written, which is one fewer than the number of
+  /// offsets the table holds.
+  int records = 0;
 
-  // Normal float16.
-  if (bits >= 0x38800000) {
-    final mantissaOdd = (bits >> 13) & 1;
-    return sign | ((bits - 0x38000000 + 0xFFF + mantissaOdd) >> 13);
+  /// The slot of [value], adding it to the buffer if it is new.
+  int slotOf(String value) {
+    records++;
+    return _slots.putIfAbsent(value, () {
+      values.add(value);
+      return values.length - 1;
+    });
   }
-
-  // Subnormal float16, or an underflow to signed zero. A float32 that is itself
-  // subnormal (a zero exponent field) is far below the float16 subnormal range.
-  final exponent = bits >> 23;
-  if (exponent == 0) return sign;
-  return sign | _shiftRoundToNearestEven(0x800000 | (bits & 0x7FFFFF), 126 - exponent);
-}
-
-/// `value >> shift`, rounded to nearest with ties going to the even value.
-int _shiftRoundToNearestEven(int value, int shift) {
-  if (shift > 24) return 0;
-  final quotient = value >> shift;
-  final remainder = value & ((1 << shift) - 1);
-  final half = 1 << (shift - 1);
-  if (remainder > half || (remainder == half && quotient.isOdd)) return quotient + 1;
-  return quotient;
 }
