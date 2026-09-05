@@ -76,8 +76,8 @@ echo -n "[1, 2, 3]" | bjdata print
 | `false`          | `F`    | `false`                        |
 | `int8`           | `i`    | `int`                          |
 | `uint8`          | `U`    | `int`                          |
-| `int16`          | `u`    | `int`                          |
-| `uint16`         | `I`    | `int`                          |
+| `int16`          | `I`    | `int`                          |
+| `uint16`         | `u`    | `int`                          |
 | `int32`          | `l`    | `int`                          |
 | `uint32`         | `m`    | `int`                          |
 | `int64`          | `L`    | `int`                          |
@@ -93,8 +93,8 @@ echo -n "[1, 2, 3]" | bjdata print
 | `array[byte]`    | `[$B`  | `ByteData`                     |
 | `array[int8]`    | `[$i`  | `Int8List`                     |
 | `array[uint8]`   | `[$U`  | `Uint8List`                    |
-| `array[int16]`   | `[$u`  | `Int16List`                    |
-| `array[uint16]`  | `[$I`  | `Uint16List`                   |
+| `array[int16]`   | `[$I`  | `Int16List`                    |
+| `array[uint16]`  | `[$u`  | `Uint16List`                   |
 | `array[int32]`   | `[$l`  | `Int32List`                    |
 | `array[uint32]`  | `[$m`  | `Uint32List`                   |
 | `array[int64]`   | `[$L`  | `Int64List`                    |
@@ -114,7 +114,7 @@ echo -n "[1, 2, 3]" | bjdata print
 |---------------|-----------|------------------------------------------------|
 | `null`        | `Z`       | `null`                                         |
 | `bool`        | `TF`      | `bool`                                         |
-| `int`         | `UiIumlL` | `int` [*](#encode-int-notice)                  |
+| `int`         | `UiuImlML`| `int` [*](#encode-int-notice)                  |
 | `double`      | `D`       | `float64`                                      |
 | `String`      | `S`       | `string`                                       |
 | `BigInt`      | `H`       | `huge`                                         |
@@ -122,8 +122,8 @@ echo -n "[1, 2, 3]" | bjdata print
 | `ByteData`    | `[$B`     | `array[byte]` [**](#encode-binary-data-notice) |
 | `Int8List`    | `[$i`     | `array[int8]`                                  |
 | `Uint8List`   | `[$U`     | `array[uint8]`                                 |
-| `Int16List`   | `[$u`     | `array[int16]`                                 |
-| `Uint16List`  | `[$I`     | `array[uint16]`                                |
+| `Int16List`   | `[$I`     | `array[int16]`                                 |
+| `Uint16List`  | `[$u`     | `array[uint16]`                                |
 | `Int32List`   | `[$l`     | `array[int32]`                                 |
 | `Uint32List`  | `[$m`     | `array[uint32]`                                |
 | `Int64List`   | `[$L`     | `array[int64]`                                 |
