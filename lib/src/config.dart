@@ -1,0 +1,107 @@
+import 'soa.dart';
+import 'version.dart';
+
+/// How BJData is written.
+///
+/// Every encoding entry point takes one of these, so the settings can be
+/// declared once and passed around rather than threaded through call sites
+/// individually. The defaults target the current specification revision with
+/// Structure-of-Arrays packing enabled.
+///
+/// Decoding accepts everything this library understands, so none of these
+/// settings affect it.
+final class BjdataConfig {
+  /// Creates a configuration, defaulting to draft 4 with row-major
+  /// Structure-of-Arrays packing.
+  const BjdataConfig({
+    this.version = BjdataVersion.draft4,
+    this.soa = BjdataSoaLayout.rowMajor,
+    this.multiDimensional = true,
+    this.compactTypes = true,
+  });
+
+  /// The specification revision to stay within.
+  ///
+  /// Acts as a ceiling: [BjdataVersion.draft3] suppresses Structure-of-Arrays
+  /// containers whatever [soa] asks for, since a draft 3 reader cannot parse
+  /// them. See [effectiveSoa].
+  final BjdataVersion version;
+
+  /// The layout used for lists that are uniform tables of records.
+  final BjdataSoaLayout soa;
+
+  /// Whether a container may be counted by a dimension array (`#[Nx Ny ...]`)
+  /// rather than by a single integer.
+  ///
+  /// Dimension arrays are a draft 3 construct, and two things are written with
+  /// one: a rectangular nesting of typed rows such as a `List<Float64List>`
+  /// becomes one N-dimensional array, and a rectangular nesting of records
+  /// becomes one N-dimensional packed table.
+  ///
+  /// When false, neither is collapsed; the nesting is written as nested arrays,
+  /// each of which may still be packed on its own, so the values are unchanged
+  /// either way. Turn it off for consumers that read a container counted by an
+  /// integer but not one counted by a dimension array.
+  final bool multiDimensional;
+
+  /// Whether a value may be written as a type other than the one its Dart type
+  /// implies, when that is smaller.
+  ///
+  /// A `List<int>` of small numbers becomes a `uint8` array, a `Uint32List` whose
+  /// values all fit in a byte becomes a `uint8` array, and a `Uint32List` holding
+  /// one very large value among small ones becomes a generic array, because a
+  /// strong type must be wide enough for its largest value while a generic array
+  /// stores each at its own width.
+  ///
+  /// The values are always preserved exactly, and a float is only narrowed when
+  /// every one of them survives the narrower type unchanged. What can change is
+  /// the Dart type they decode back to, so a `List<int>` may return as a
+  /// [Uint8List]. Turn it off when the decoded types matter as much as the values.
+  ///
+  /// The `byte` type is never re-chosen: it is the same width as `uint8` and so
+  /// could never be smaller, while the specification gives it a distinct meaning.
+  final bool compactTypes;
+
+  /// Output a BJData draft 3 reader can parse, with no Structure-of-Arrays
+  /// containers.
+  ///
+  /// Named settings like this one describe a whole configuration, so the other
+  /// fields take their defaults. To change one setting of an existing
+  /// configuration, use [copyWith].
+  static const BjdataConfig draft3 = BjdataConfig(version: BjdataVersion.draft3);
+
+  /// The layout actually used, once [version] has had its say.
+  ///
+  /// [BjdataVersion.draft3] cannot express a Structure-of-Arrays container, so
+  /// it overrides [soa] rather than being overridden by it.
+  BjdataSoaLayout get effectiveSoa => version == BjdataVersion.draft3 ? BjdataSoaLayout.off : soa;
+
+  /// A copy of this configuration with the given settings replaced.
+  BjdataConfig copyWith({
+    BjdataVersion? version,
+    BjdataSoaLayout? soa,
+    bool? multiDimensional,
+    bool? compactTypes,
+  }) =>
+      BjdataConfig(
+        version: version ?? this.version,
+        soa: soa ?? this.soa,
+        multiDimensional: multiDimensional ?? this.multiDimensional,
+        compactTypes: compactTypes ?? this.compactTypes,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is BjdataConfig &&
+      other.version == version &&
+      other.soa == soa &&
+      other.multiDimensional == multiDimensional &&
+      other.compactTypes == compactTypes;
+
+  @override
+  int get hashCode => Object.hash(version, soa, multiDimensional, compactTypes);
+
+  @override
+  String toString() => 'BjdataConfig(version: $version, soa: $soa, multiDimensional: $multiDimensional, '
+      'compactTypes: $compactTypes)';
+}

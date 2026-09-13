@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'decoder/decoder.dart';
+import 'config.dart';
 import 'encoder/encoder.dart';
 
 const BjdataCodec bjdata = BjdataCodec();
@@ -16,6 +17,7 @@ const BjdataCodec bjdata = BjdataCodec();
 class BjdataCodec extends Codec<Object?, List<int>> {
   final Object? Function(Object? key, Object? value)? _reviver;
   final Object? Function(dynamic)? _toEncodable;
+  final BjdataConfig _config;
 
   /// Creates a `BjdataCodec` with the given reviver and encoding function.
   ///
@@ -38,11 +40,17 @@ class BjdataCodec extends Codec<Object?, List<int>> {
   ///
   /// If [toEncodable] is omitted, it defaults to a function that returns the
   /// result of calling `.toJson()` on the unencodable object.
+  ///
+  /// [config] selects the specification revision to stay within and how
+  /// Structure-of-Arrays containers are written. Decoding understands
+  /// everything regardless of it.
   const BjdataCodec({
     Object? Function(Object? key, Object? value)? reviver,
     Object? Function(dynamic object)? toEncodable,
+    BjdataConfig config = const BjdataConfig(),
   })  : _reviver = reviver,
-        _toEncodable = toEncodable;
+        _toEncodable = toEncodable,
+        _config = config;
 
   /// Creates a `BjdataCodec` with the given reviver.
   ///
@@ -79,21 +87,23 @@ class BjdataCodec extends Codec<Object?, List<int>> {
   ///
   /// If [toEncodable] is omitted, it defaults to a function that returns the
   /// result of calling `.toJson()` on the unencodable object.
+  ///
+  /// Lists that are uniform tables of records are written as Structure-of-Arrays
+  /// containers rather than arrays of objects, as directed by [config].
   @override
   List<int> encode(
     Object? input, {
     Object? Function(dynamic object)? toEncodable,
+    BjdataConfig? config,
   }) {
     toEncodable ??= _toEncodable;
-    if (toEncodable == null) return encoder.convert(input);
-    return BjdataEncoder(toEncodable).convert(input);
+    config ??= _config;
+    if (toEncodable == null && config == _config) return encoder.convert(input);
+    return BjdataEncoder(toEncodable, null, config).convert(input);
   }
 
   @override
-  BjdataEncoder get encoder {
-    if (_toEncodable == null) return BjdataEncoder();
-    return BjdataEncoder(_toEncodable);
-  }
+  BjdataEncoder get encoder => BjdataEncoder(_toEncodable, null, _config);
 
   @override
   BjdataDecoder get decoder {
@@ -104,12 +114,24 @@ class BjdataCodec extends Codec<Object?, List<int>> {
 
 /// Converts [object] into BJData.
 ///
+/// Any list that is a uniform table of two or more records is written as a
+/// Structure-of-Arrays container instead of an array of objects. Lists that are
+/// not uniform tables are written unchanged, so the decoded values are the same
+/// either way.
+///
+/// [config] selects the container layout and the specification revision to stay
+/// within. Use [BjdataConfig.draft3] for a consumer that predates draft 4, or
+/// [BjdataConfig(soa: BjdataSoaLayout.off)] to keep writing plain arrays of objects.
+/// [BjdataSoaLayout.columnMajor] writes an object of named arrays, which decodes
+/// to a [Map] of columns rather than a list of records.
+///
 /// See [BjdataCodec.encode]
 List<int> bjdataEncode(
   Object? object, {
   Object? Function(Object? nonEncodable)? toEncodable,
+  BjdataConfig config = const BjdataConfig(),
 }) =>
-    bjdata.encode(object, toEncodable: toEncodable);
+    bjdata.encode(object, toEncodable: toEncodable, config: config);
 
 /// Parses the BJData [source] and returns the resulting object.
 ///
@@ -127,5 +149,6 @@ String bjdataBlockNotation(
   Object? object, {
   Object? Function(Object? nonEncodable)? toEncodable,
   String? indent,
+  BjdataConfig config = const BjdataConfig(),
 }) =>
-    BjdataBlockNotationEncoder.withIndent(indent, toEncodable).convert(object);
+    BjdataBlockNotationEncoder.withIndent(indent, toEncodable, config).convert(object);

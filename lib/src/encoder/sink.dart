@@ -4,6 +4,10 @@ import 'dart:typed_data';
 
 import '../error.dart';
 import '../marker.dart';
+import '../nd.dart';
+import '../packing.dart';
+import '../config.dart';
+import '../soa.dart';
 
 /// Implements the chunked conversion from object to its BJData representation.
 ///
@@ -13,9 +17,11 @@ class BjdataEncoderSink implements ChunkedConversionSink<Object?> {
   final ByteConversionSink _sink;
   final Object? Function(dynamic)? _toEncodable;
   final int _bufferSize;
+  final BjdataConfig _config;
   bool _isDone = false;
 
-  BjdataEncoderSink(this._sink, this._toEncodable, this._bufferSize);
+  BjdataEncoderSink(this._sink, this._toEncodable, this._bufferSize, {BjdataConfig config = const BjdataConfig()})
+      : _config = config;
 
   /// Encodes the given object [o].
   ///
@@ -29,7 +35,8 @@ class BjdataEncoderSink implements ChunkedConversionSink<Object?> {
     }
     _isDone = true;
     BjdataBufferWriter.encode(
-        object, _toEncodable, _bufferSize, (chunk) => _sink.addSlice(chunk, 0, chunk.length, false));
+        object, _toEncodable, _bufferSize, (chunk) => _sink.addSlice(chunk, 0, chunk.length, false),
+        config: _config);
     _sink.close();
   }
 
@@ -49,9 +56,12 @@ class BjdataBlockNotationEncoderSink implements ChunkedConversionSink<Object?> {
   final String? _indent;
   final Object? Function(dynamic)? _toEncodable;
   final StringConversionSink _sink;
+  final BjdataConfig _config;
   bool _isDone = false;
 
-  BjdataBlockNotationEncoderSink(this._sink, this._toEncodable, this._indent);
+  BjdataBlockNotationEncoderSink(this._sink, this._toEncodable, this._indent,
+      {BjdataConfig config = const BjdataConfig()})
+      : _config = config;
 
   /// Encodes the given object [o].
   ///
@@ -65,7 +75,7 @@ class BjdataBlockNotationEncoderSink implements ChunkedConversionSink<Object?> {
     }
     _isDone = true;
     final stringSink = _sink.asStringSink();
-    BjdataBlockNotationStringifier.printOn(o, stringSink, _toEncodable, _indent);
+    BjdataBlockNotationStringifier.printOn(o, stringSink, _toEncodable, _indent, config: _config);
     stringSink.close();
   }
 
@@ -91,7 +101,11 @@ abstract class _BjdataWriter<T> {
   /// Function called for each un-encodable object encountered.
   final Function(dynamic) _toEncodable;
 
-  _BjdataWriter(dynamic Function(dynamic o)? toEncodable) : _toEncodable = toEncodable ?? _defaultToEncodable;
+  /// How the output is written.
+  final BjdataConfig _config;
+
+  _BjdataWriter(dynamic Function(dynamic o)? toEncodable, this._config)
+      : _toEncodable = toEncodable ?? _defaultToEncodable;
 
   T? get _partialResult;
 
@@ -167,8 +181,23 @@ abstract class _BjdataWriter<T> {
         writeTypedData(td);
       case List l:
         _checkCycle(l);
-        writeList(object);
-        _removeSeen(object);
+        final layout = _config.effectiveSoa;
+        final soa =
+            layout == BjdataSoaLayout.off ? null : tryBjdataSoaCandidate(l, multiDimensional: _config.multiDimensional);
+        final nd = soa == null && _config.multiDimensional
+            ? tryBjdataNdCandidate(l, compactTypes: _config.compactTypes)
+            : null;
+        final packing = soa == null && nd == null && _config.compactTypes ? tryBjdataNumericPacking(l) : null;
+        if (soa != null) {
+          writeSoa(soa, layout);
+        } else if (nd != null) {
+          writeNdArray(nd);
+        } else if (packing != null) {
+          writeNumericArray(packing.marker, packing.values);
+        } else {
+          writeList(l);
+        }
+        _removeSeen(l);
       case Map m:
         _checkCycle(m);
         // writeMap can fail if keys are not all strings.
@@ -188,8 +217,11 @@ abstract class _BjdataWriter<T> {
   }
 
   /// Append a string contents to the BJData output.
+  ///
+  /// The length prefix counts UTF-8 bytes, which differs from `string.length`
+  /// for any string outside the ASCII range.
   void writeStringWithoutMarker(String string) {
-    writeInt(string.length);
+    writeInt(utf8.encode(string).length);
     writeStringContents(string);
   }
 
@@ -216,9 +248,25 @@ abstract class _BjdataWriter<T> {
   }
 
   /// Serialize a [double]
+  ///
+  /// Narrows to the smallest float type that holds [number] unchanged when the
+  /// configuration allows it. The decoded value is a [double] either way.
   void writeDouble(double number) {
-    writeMarker(BjdataMarker.float64);
-    writeDoubleWithoutMarker(number);
+    final marker = _config.compactTypes ? bjdataFloatMarker([number]) : BjdataMarker.float64;
+    writeMarker(marker);
+    writeFloatWithoutMarker(marker, number);
+  }
+
+  /// Serialize a [double] as a `float64` without a type marker.
+  void writeDoubleWithoutMarker(double number) => writeFloatWithoutMarker(BjdataMarker.float64, number);
+
+  /// Serialize an [int] with a type marker.
+  ///
+  /// If [marker] is null, the smallest marker that fits [integer] is used.
+  void writeIntWithMarker(BjdataMarker? marker, int integer) {
+    if (marker == null) return writeInt(integer);
+    writeMarker(marker);
+    writeIntWithoutMarker(marker, integer);
   }
 
   /// Serialize a [List].
@@ -238,7 +286,33 @@ abstract class _BjdataWriter<T> {
   }
 
   /// Serialize a [TypedData] buffer
+  ///
+  /// A buffer whose values would all fit a narrower type is written as that
+  /// type, when the configuration allows it.
+  ///
+  /// It stays a strongly-typed array either way. Passing typed data is itself a
+  /// request for one, and a generic array only beats it on a handful of elements
+  /// or a very uneven spread, which is not worth discarding what the caller
+  /// asked for. Pass a plain [List] to have both forms measured instead.
+  ///
+  /// [ByteData] is left alone: `byte` is already the narrowest width, and the
+  /// specification gives it a meaning of its own.
   void writeTypedData(TypedData buffer) {
+    if (_config.compactTypes && buffer is! ByteData) {
+      // An empty buffer says nothing about what would fit.
+      final values = _typedDataValues(buffer);
+      if (values != null && values.isNotEmpty) {
+        final marker = _narrowestMarker(values);
+        final current = bjdataTypedDataMarker(buffer);
+        // Only when it is actually narrower. A positive int64 fits uint64 just
+        // as well, and swapping one for the other would change the type for
+        // nothing.
+        if (marker != null && current != null && marker.fixedByteLength! < current.fixedByteLength!) {
+          return writeNumericArray(marker, values);
+        }
+      }
+    }
+
     final lengthInBytes = buffer.lengthInBytes;
     final elementSize = buffer.elementSizeInBytes;
     final elementCount = lengthInBytes ~/ elementSize;
@@ -271,8 +345,11 @@ abstract class _BjdataWriter<T> {
   /// Serialize an [int]
   void writeIntWithoutMarker(BjdataMarker marker, int integer);
 
-  /// Serialize a [double]
-  void writeDoubleWithoutMarker(double number);
+  /// Serialize a [double] as [marker], which must be `h`, `d` or `D`.
+  void writeFloatWithoutMarker(BjdataMarker marker, double number);
+
+  /// Append [count] null padding bytes to the BJData output.
+  void writePadding(int count);
 
   /// Append a string contents to the BJData output.
   void writeStringContents(String string);
@@ -292,8 +369,318 @@ abstract class _BjdataWriter<T> {
     }
   }
 
+  /// The narrowest strong type holding every value in [values] unchanged.
+  static BjdataMarker? _narrowestMarker(List<Object?> values) {
+    if (values.every((v) => v is int)) {
+      var min = values.first as int;
+      var max = min;
+      for (final value in values.cast<int>()) {
+        if (value < min) min = value;
+        if (value > max) max = value;
+      }
+      return bjdataIntegerMarker(min, max);
+    }
+    if (values.every((v) => v is double)) return bjdataFloatMarker(values.cast<double>());
+    return null;
+  }
+
+  /// The elements of [buffer] as a list, or null if they cannot be examined.
+  static List<Object?>? _typedDataValues(TypedData buffer) => switch (buffer) {
+        Int8List() ||
+        Uint8List() ||
+        Int16List() ||
+        Uint16List() ||
+        Int32List() ||
+        Uint32List() ||
+        Int64List() ||
+        Uint64List() ||
+        Float32List() ||
+        Float64List() =>
+          (buffer as List<num>).toList(growable: false),
+        _ => null,
+      };
+
+  /// Serialize a list of numbers as a strongly-typed array of [marker].
+  void writeNumericArray(BjdataMarker marker, List<Object?> values) {
+    writeMarker(BjdataMarker.arrayOpen);
+    writeMarker(BjdataMarker.strongType);
+    writeMarker(marker);
+    writeMarker(BjdataMarker.count);
+    writeInt(values.length);
+    for (final value in values) {
+      if (marker.isFloatType) {
+        writeFloatWithoutMarker(marker, (value as num).toDouble());
+      } else {
+        writeIntWithoutMarker(marker, value as int);
+      }
+    }
+  }
+
   /// Serialize a [TypedData] buffer
   void writeTypedDataContents(TypedData buffer);
+
+  /// Serialize a rectangular nesting of typed rows as one N-dimensional array.
+  ///
+  /// The rows are written end to end in row-major order behind a dimension array
+  /// count, so the result holds the same values as the nesting it replaces while
+  /// carrying one container header rather than one per row.
+  void writeNdArray(BjdataNdCandidate nd) {
+    writeMarker(BjdataMarker.arrayOpen);
+    writeMarker(BjdataMarker.strongType);
+    writeMarker(nd.marker);
+    writeMarker(BjdataMarker.count);
+    writeMarker(BjdataMarker.arrayOpen);
+    for (final dimension in nd.dimensions) {
+      writeInt(dimension);
+    }
+    writeMarker(BjdataMarker.arrayClose);
+
+    // Rows are copied wholesale unless they are being narrowed, in which case
+    // each value is converted on the way out.
+    final native = nd.marker == bjdataTypedDataMarker(nd.rows.first);
+    for (final row in nd.rows) {
+      if (native) {
+        writeTypedDataContents(row);
+      } else {
+        for (final value in row as List<num>) {
+          if (nd.marker.isFloatType) {
+            writeFloatWithoutMarker(nd.marker, value.toDouble());
+          } else {
+            writeIntWithoutMarker(nd.marker, value as int);
+          }
+        }
+      }
+    }
+  }
+
+  /// Begins a nested output block. Only meaningful for block notation output.
+  void enterBlock() {}
+
+  /// Ends a nested output block. Only meaningful for block notation output.
+  void exitBlock() {}
+
+  /// Starts a new line at the current block level. Only meaningful for block
+  /// notation output.
+  void newLine() {}
+
+  /// Serialize a detected table as a Structure-of-Arrays container.
+  ///
+  /// Both layouts share the same schema, count and payload size; only the order
+  /// of the payload differs. Offset tables always follow the payload in schema
+  /// field order, whichever layout is used.
+  void writeSoa(BjdataSoaCandidate soa, BjdataSoaLayout layout) {
+    final columnMajor = layout == BjdataSoaLayout.columnMajor;
+    writeMarker(columnMajor ? BjdataMarker.objectOpen : BjdataMarker.arrayOpen);
+    writeSoaHeader(soa.schema, soa.dimensions);
+
+    final offsets = {
+      for (final field in soa.schema.offsetFields.entries) field.key: _SoaOffsetWriter(field.value),
+    };
+    enterBlock();
+    if (columnMajor) {
+      for (final field in soa.schema.fields.entries) {
+        newLine();
+        for (final record in soa.records) {
+          writeSoaField(field.value, field.key, field.key, _soaRecordValue(record, field.key), offsets);
+        }
+      }
+    } else {
+      for (final record in soa.records) {
+        newLine();
+        for (final field in soa.schema.fields.entries) {
+          writeSoaField(field.value, field.key, field.key, _soaRecordValue(record, field.key), offsets);
+        }
+      }
+    }
+    writeSoaOffsetTables(offsets);
+    exitBlock();
+  }
+
+  static Object? _soaRecordValue(Map<String, Object?> record, String name) => record.containsKey(name)
+      ? record[name]
+      : throw ArgumentError.value(record, 'record', "Missing field '$name' declared by the schema");
+
+  /// Serialize the `${schema}#count` header shared by both SoA layouts, with the
+  /// container marker already written.
+  void writeSoaHeader(BjdataSoaSchema schema, List<int> dimensions) {
+    writeMarker(BjdataMarker.strongType);
+    writeSoaFields(schema.fields);
+    writeMarker(BjdataMarker.count);
+    if (dimensions.length == 1) {
+      writeInt(dimensions.single);
+    } else {
+      writeMarker(BjdataMarker.arrayOpen);
+      for (final dimension in dimensions) {
+        writeInt(dimension);
+      }
+      writeMarker(BjdataMarker.arrayClose);
+    }
+  }
+
+  /// Serialize a payload-less schema object.
+  void writeSoaFields(Map<String, BjdataSoaType> fields) {
+    writeMarker(BjdataMarker.objectOpen);
+    enterBlock();
+    for (final field in fields.entries) {
+      newLine();
+      writeStringWithoutMarker(field.key);
+      writeSoaType(field.value);
+    }
+    exitBlock();
+    newLine();
+    writeMarker(BjdataMarker.objectClose);
+  }
+
+  /// Serialize a single schema type specification.
+  void writeSoaType(BjdataSoaType type) {
+    switch (type) {
+      case BjdataSoaValueType(:final marker):
+        writeMarker(marker);
+      case BjdataSoaBooleanType():
+        writeMarker(BjdataMarker.true_);
+      case BjdataSoaNullType():
+        writeMarker(BjdataMarker.null_);
+      case BjdataSoaFixedStringType(:final byteLength, :final huge, :final lengthMarker):
+        writeMarker(huge ? BjdataMarker.huge : BjdataMarker.string);
+        writeIntWithMarker(lengthMarker, byteLength);
+      case BjdataSoaDictionaryType(:final values, :final huge, :final countMarker):
+        writeMarker(BjdataMarker.arrayOpen);
+        writeMarker(BjdataMarker.strongType);
+        writeMarker(huge ? BjdataMarker.huge : BjdataMarker.string);
+        writeMarker(BjdataMarker.count);
+        writeIntWithMarker(countMarker, values.length);
+        for (final value in values) {
+          writeStringWithoutMarker(huge ? (value as BigInt).toRadixString(10) : value as String);
+        }
+      case BjdataSoaOffsetType(:final offsetMarker):
+        writeMarker(BjdataMarker.arrayOpen);
+        writeMarker(BjdataMarker.strongType);
+        writeMarker(offsetMarker);
+        writeMarker(BjdataMarker.arrayClose);
+      case BjdataSoaObjectType(:final fields):
+        writeSoaFields(fields);
+      case BjdataSoaArrayType(:final elements):
+        writeMarker(BjdataMarker.arrayOpen);
+        for (final element in elements) {
+          writeSoaType(element);
+        }
+        writeMarker(BjdataMarker.arrayClose);
+    }
+  }
+
+  /// Serialize one field of one record into the fixed payload area.
+  ///
+  /// Offset-table fields write only their index here; the strings themselves are
+  /// collected in [offsets] and emitted by [writeSoaOffsetTables].
+  void writeSoaField(
+    BjdataSoaType type,
+    String name,
+    String path,
+    Object? value,
+    Map<String, _SoaOffsetWriter> offsets,
+  ) {
+    switch (type) {
+      case BjdataSoaNullType():
+        break;
+      case BjdataSoaBooleanType():
+        if (value is! bool) throw _soaTypeError(name, value, 'a bool');
+        writeMarker(value ? BjdataMarker.true_ : BjdataMarker.false_);
+      case BjdataSoaValueType(:final marker):
+        writeSoaValue(marker, name, value);
+      case BjdataSoaFixedStringType(:final byteLength, :final huge):
+        if (huge) {
+          if (value is! BigInt) throw _soaTypeError(name, value, 'a BigInt');
+          writeFixedStringContents(value.toRadixString(10), byteLength);
+        } else {
+          if (value is! String) throw _soaTypeError(name, value, 'a String');
+          writeFixedStringContents(value, byteLength);
+        }
+      case BjdataSoaDictionaryType(:final values, :final huge, :final indexMarker):
+        if (huge ? value is! BigInt : value is! String) {
+          throw _soaTypeError(name, value, huge ? 'a BigInt' : 'a String');
+        }
+        final index = values.indexOf(value!);
+        if (index < 0) {
+          throw ArgumentError.value(value, name, 'Not present in the schema dictionary');
+        }
+        writeIntWithoutMarker(indexMarker, index);
+      case BjdataSoaOffsetType(:final offsetMarker):
+        if (value is! String) throw _soaTypeError(name, value, 'a String');
+        final writer = offsets[path]!;
+        writeIntWithoutMarker(offsetMarker, writer.values.length);
+        writer.values.add(value);
+      case BjdataSoaObjectType(:final fields):
+        if (value is! Map) throw _soaTypeError(name, value, 'a Map');
+        for (final field in fields.entries) {
+          writeSoaField(
+            field.value,
+            field.key,
+            '$path.${field.key}',
+            _soaRecordValue(value.cast<String, Object?>(), field.key),
+            offsets,
+          );
+        }
+      case BjdataSoaArrayType(:final elements):
+        if (value is! List) throw _soaTypeError(name, value, 'a List');
+        if (value.length != elements.length) {
+          throw ArgumentError.value(value, name, 'Expected ${elements.length} elements, got ${value.length}');
+        }
+        for (var i = 0; i < elements.length; i++) {
+          writeSoaField(elements[i], '$name[$i]', '$path[$i]', value[i], offsets);
+        }
+    }
+  }
+
+  /// Serialize a fixed-length payload value of type [marker].
+  void writeSoaValue(BjdataMarker marker, String name, Object? value) {
+    switch (marker) {
+      case BjdataMarker.char:
+        if (value is! String || value.length != 1) throw _soaTypeError(name, value, 'a single-character String');
+        final code = value.codeUnitAt(0);
+        if (code > 127) throw ArgumentError.value(value, name, 'char values must be ASCII (0-127)');
+        writeIntWithoutMarker(BjdataMarker.uint8, code);
+      case BjdataMarker.byte:
+        if (value is! int) throw _soaTypeError(name, value, 'an int');
+        writeIntWithoutMarker(BjdataMarker.uint8, value);
+      case BjdataMarker.float16 || BjdataMarker.float32 || BjdataMarker.float64:
+        if (value is! num) throw _soaTypeError(name, value, 'a num');
+        writeFloatWithoutMarker(marker, value.toDouble());
+      default:
+        if (value is! int) throw _soaTypeError(name, value, 'an int');
+        writeIntWithoutMarker(marker, value);
+    }
+  }
+
+  static ArgumentError _soaTypeError(String name, Object? value, String expected) =>
+      ArgumentError.value(value, name, 'Expected $expected for this SoA field');
+
+  /// Serialize a string padded to exactly [byteLength] UTF-8 bytes.
+  void writeFixedStringContents(String string, int byteLength) {
+    final length = utf8.encode(string).length;
+    if (length > byteLength) {
+      throw ArgumentError.value(string, 'value', 'Does not fit in $byteLength bytes');
+    }
+    writeStringContents(string);
+    writePadding(byteLength - length);
+  }
+
+  /// Serialize the offset table and string buffer of every offset-table field.
+  void writeSoaOffsetTables(Map<String, _SoaOffsetWriter> offsets) {
+    for (final writer in offsets.values) {
+      final marker = writer.type.offsetMarker;
+      newLine();
+      var offset = 0;
+      writeIntWithoutMarker(marker, offset);
+      for (final value in writer.values) {
+        offset += utf8.encode(value).length;
+        writeIntWithoutMarker(marker, offset);
+      }
+      newLine();
+      for (final value in writer.values) {
+        writeStringContents(value);
+      }
+    }
+  }
 }
 
 /// Specialization of [_BjdataWriter] that writes the BJData to a buffer.
@@ -308,7 +695,13 @@ class BjdataBufferWriter extends _BjdataWriter {
 
   int get free => buffer.length - index;
 
-  BjdataBufferWriter(super.toEncodable, this.bufferSize, this.addChunk) : buffer = Uint8List(bufferSize);
+  BjdataBufferWriter(
+    dynamic Function(dynamic o)? toEncodable,
+    this.bufferSize,
+    this.addChunk, {
+    BjdataConfig config = const BjdataConfig(),
+  })  : buffer = Uint8List(bufferSize),
+        super(toEncodable, config);
 
   /// Convert [object] to UTF-8 encoded BJData.
   ///
@@ -320,9 +713,10 @@ class BjdataBufferWriter extends _BjdataWriter {
     Object? object,
     dynamic Function(dynamic o)? toEncodable,
     int bufferSize,
-    void Function(Uint8List chunk) addChunk,
-  ) {
-    final encoder = BjdataBufferWriter(toEncodable, bufferSize, addChunk);
+    void Function(Uint8List chunk) addChunk, {
+    BjdataConfig config = const BjdataConfig(),
+  }) {
+    final encoder = BjdataBufferWriter(toEncodable, bufferSize, addChunk, config: config);
     encoder.write(object);
     encoder.flush(refill: false);
   }
@@ -386,8 +780,19 @@ class BjdataBufferWriter extends _BjdataWriter {
   }
 
   @override
-  void writeDoubleWithoutMarker(double number) {
-    writeBytes((ByteData(8)..setFloat64(0, number, Endian.little)).buffer.asUint8List());
+  void writeFloatWithoutMarker(BjdataMarker marker, double number) {
+    writeBytes(switch (marker) {
+      BjdataMarker.float16 =>
+        (ByteData(2)..setUint16(0, bjdataFloat16Bits(number), Endian.little)).buffer.asUint8List(),
+      BjdataMarker.float32 => (ByteData(4)..setFloat32(0, number, Endian.little)).buffer.asUint8List(),
+      BjdataMarker.float64 => (ByteData(8)..setFloat64(0, number, Endian.little)).buffer.asUint8List(),
+      _ => throw ArgumentError.value(marker, 'marker', 'Not a valid float marker'),
+    });
+  }
+
+  @override
+  void writePadding(int count) {
+    if (count > 0) writeBytes(Uint8List(count));
   }
 
   @override
@@ -422,8 +827,9 @@ class BjdataBlockNotationStringifier extends _BjdataWriter {
   BjdataBlockNotationStringifier(
     this._sink,
     dynamic Function(dynamic o)? toEncodable,
-    this._indent,
-  ) : super(toEncodable);
+    this._indent, {
+    BjdataConfig config = const BjdataConfig(),
+  }) : super(toEncodable, config);
 
   /// Convert object to a string.
   ///
@@ -437,10 +843,11 @@ class BjdataBlockNotationStringifier extends _BjdataWriter {
   static String stringify(
     Object? object,
     dynamic Function(dynamic object)? toEncodable,
-    String? indent,
-  ) {
+    String? indent, {
+    BjdataConfig config = const BjdataConfig(),
+  }) {
     var output = StringBuffer();
-    printOn(object, output, toEncodable, indent);
+    printOn(object, output, toEncodable, indent, config: config);
     return output.toString();
   }
 
@@ -451,9 +858,10 @@ class BjdataBlockNotationStringifier extends _BjdataWriter {
     Object? object,
     StringSink output,
     dynamic Function(dynamic o)? toEncodable,
-    String? indent,
-  ) {
-    BjdataBlockNotationStringifier(output, toEncodable, indent).write(object);
+    String? indent, {
+    BjdataConfig config = const BjdataConfig(),
+  }) {
+    BjdataBlockNotationStringifier(output, toEncodable, indent, config: config).write(object);
     if (indent != null) output.write('\n');
   }
 
@@ -482,7 +890,26 @@ class BjdataBlockNotationStringifier extends _BjdataWriter {
   void writeMarker(BjdataMarker tm) => writeBlock(tm.ascii);
 
   @override
-  void writeDoubleWithoutMarker(double number) => writeBlock(number.toString());
+  void writeFloatWithoutMarker(BjdataMarker marker, double number) => writeBlock(number.toString());
+
+  @override
+  void writePadding(int count) {
+    for (var i = 0; i < count; i++) {
+      writeBlock('0');
+    }
+  }
+
+  @override
+  void enterBlock() => _indentLevel++;
+
+  @override
+  void exitBlock() => _indentLevel--;
+
+  @override
+  void newLine() {
+    writeNewLine();
+    writeIndentation(_indentLevel);
+  }
 
   @override
   void writeIntWithoutMarker(BjdataMarker marker, int integer) => writeBlock(integer.toString());
@@ -526,4 +953,13 @@ class BjdataBlockNotationStringifier extends _BjdataWriter {
       writeBlock(v.toString());
     }
   }
+}
+
+/// Collects the strings of one offset-table backed SoA field while the fixed
+/// payload is being written.
+class _SoaOffsetWriter {
+  _SoaOffsetWriter(this.type);
+
+  final BjdataSoaOffsetType type;
+  final List<String> values = [];
 }

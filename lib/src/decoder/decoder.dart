@@ -44,6 +44,13 @@ final class BjdataDecoder extends Converter<List<int>, Object?> {
   /// [List]s of parsed BJData values or [Map]s from [String] to parsed BJData
   /// values.
   ///
+  /// Structure-of-Arrays containers decode to plain types: a row-major container
+  /// becomes a [List] of record [Map]s and a column-major one a [Map] of column
+  /// [List]s, with N-dimensional containers nested according to their
+  /// dimensions. Within an SoA payload the reviver is invoked for each field
+  /// value with the schema field name as the key, and not for the records or
+  /// columns holding them.
+  ///
   /// If `this` was initialized with a reviver, then the parsing operation
   /// invokes the reviver on every object or list property that has been parsed.
   /// The arguments are the property name ([String]) or list index ([int]), and
